@@ -928,48 +928,5 @@ ENDCLASS.`;
       // Should succeed (not an error about BTP)
       expect(result.isError).toBeUndefined();
     });
-
-    it('blocks known SAP standard table queries on BTP', async () => {
-      setBtpMode();
-      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPQuery', {
-        sql: "SELECT * FROM DD02L WHERE tabname LIKE 'Z%'",
-      });
-      expect(result.isError).toBe(true);
-      expect(result.content[0]?.text).toContain('DD02L');
-      expect(result.content[0]?.text).toContain('not accessible on BTP');
-      expect(result.content[0]?.text).toContain('released CDS');
-    });
-
-    it('blocks TADIR query on BTP', async () => {
-      setBtpMode();
-      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPQuery', {
-        sql: "SELECT obj_name FROM TADIR WHERE pgmid = 'R3TR'",
-      });
-      expect(result.isError).toBe(true);
-      expect(result.content[0]?.text).toContain('TADIR');
-      expect(result.content[0]?.text).toContain('not accessible on BTP');
-    });
-
-    it('allows custom table query on BTP', async () => {
-      setBtpMode();
-      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPQuery', {
-        sql: 'SELECT * FROM ZCUSTOM_TABLE',
-      });
-      // Should not be blocked — custom tables are allowed
-      // (may fail for other reasons in test, but should not get BTP block message)
-      const text = result.content[0]?.text ?? '';
-      expect(text).not.toContain('not accessible on BTP');
-    });
-
-    it('does not block queries when not in BTP mode', async () => {
-      // No cachedFeatures = not BTP
-      resetCachedFeatures();
-      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPQuery', {
-        sql: "SELECT * FROM DD02L WHERE tabname LIKE 'Z%'",
-      });
-      // Should not get BTP block message
-      const text = result.content[0]?.text ?? '';
-      expect(text).not.toContain('not accessible on BTP');
-    });
   });
 });

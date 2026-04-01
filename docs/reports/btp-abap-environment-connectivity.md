@@ -1,24 +1,67 @@
 # Connecting to SAP BTP ABAP Environment via ADT API
 
 **Date:** 2026-04-01
-**Status:** Implemented (pending live testing)
+**Last updated:** 2026-04-01
+**Status:** Implemented and tested — OAuth auth, system detection, tool adaptation, deployment docs
+**PR:** #18 (`feat/btp-abap-direct-oauth-v2`)
 
 ## Executive Summary
 
-The ADT API (`/sap/bc/adt/*`) is fully available on BTP ABAP Environment (Steampunk). The main difference from on-premise is **authentication** — BTP ABAP requires OAuth 2.0 via XSUAA instead of Basic Auth. CSRF token handling remains identical.
+The ADT API (`/sap/bc/adt/*`) is fully available on BTP ABAP Environment (Steampunk). Two major differences from on-premise: **authentication** (OAuth 2.0 via XSUAA instead of Basic Auth) and **available capabilities** (restricted ABAP language, no classic programs, limited table access).
 
-**Implementation:** ARC-1 now supports direct BTP ABAP Environment connections via service key + OAuth Authorization Code flow (browser login), following the fr0ster model. See [BTP ABAP Environment Setup](../btp-abap-environment.md) for usage.
+ARC-1 now has full BTP ABAP support across three areas:
 
-**Files added/changed:**
+1. **Authentication** — Service key + OAuth Authorization Code flow (browser login) for local development. See [BTP ABAP Environment Setup](../btp-abap-environment.md).
+2. **System detection** — Auto-detects BTP vs on-premise from SAP_CLOUD component (zero extra HTTP calls), with `SAP_SYSTEM_TYPE` manual override.
+3. **Tool adaptation** — Dynamic tool descriptions, type filtering, and helpful error messages tailored to BTP constraints.
+
+### What was implemented
+
+| Area | Status | Files |
+|------|--------|-------|
+| OAuth browser login (service key) | ✅ Done | `oauth.ts`, `http.ts`, `config.ts`, `client.ts`, `server.ts` |
+| Token caching + auto-refresh | ✅ Done | `oauth.ts` |
+| System type detection (auto) | ✅ Done | `features.ts`, `types.ts` |
+| System type override (env/CLI) | ✅ Done | `config.ts`, `types.ts` |
+| Tool description adaptation | ✅ Done | `tools.ts` |
+| Handler behavior adaptation | ✅ Done | `intent.ts` |
+| BTP deployment docs | ✅ Done | `deployment-best-practices.md`, `phase4-btp-deployment.md`, `btp-abap-environment.md` |
+| Manifest templates | ✅ Done | `manifest.yml`, `manifest-btp-abap.yml` |
+| Unit tests (detection + tools + handlers + config) | ✅ Done | 37 new tests |
+| JWT Bearer Exchange (deployed multi-user → BTP) | ⏭️ Deferred | See [Section 10](#10-deferred-jwt-bearer-exchange) |
+| CI/CD Communication User auth | ⏭️ Deferred | See [Section 10](#10-deferred-jwt-bearer-exchange) |
+
+### Files added/changed
+
+**OAuth + Auth (earlier in PR #18):**
 - `ts-src/adt/oauth.ts` — OAuth module (service key parsing, browser flow, token lifecycle)
 - `ts-src/adt/http.ts` — `bearerTokenProvider` in config, Bearer token injection
 - `ts-src/adt/config.ts` — `bearerTokenProvider` in `AdtClientConfig`
 - `ts-src/adt/client.ts` — Pass bearer token provider to HTTP client
-- `ts-src/server/types.ts` — `btpServiceKey`, `btpServiceKeyFile`, `btpOAuthCallbackPort`
+- `ts-src/server/types.ts` — `btpServiceKey`, `btpServiceKeyFile`, `btpOAuthCallbackPort`, `systemType`
 - `ts-src/server/config.ts` — Parse new env vars and CLI flags
 - `ts-src/server/server.ts` — Wire up service key → OAuth provider → ADT client
 - `tests/unit/adt/oauth.test.ts` — 27 tests
-- `tests/unit/server/config.test.ts` — 7 new config tests
+- `tests/unit/server/config.test.ts` — 13 new config tests (7 OAuth + 6 system type)
+
+**System detection + Tool adaptation (later in PR #18):**
+- `ts-src/adt/types.ts` — `SystemType`, `systemType` in `ResolvedFeatures`
+- `ts-src/adt/features.ts` — `detectSystemType()`, `probeFeatures()` accepts override
+- `ts-src/handlers/tools.ts` — Dynamic `getToolDefinitions()` with BTP/on-prem variants
+- `ts-src/handlers/intent.ts` — BTP_HINTS map, `isBtpSystem()`
+- `tests/unit/adt/features.test.ts` — 5 detection tests
+- `tests/unit/handlers/tools.test.ts` — 16 BTP tool definition tests
+- `tests/unit/handlers/intent.test.ts` — 10 BTP handler behavior tests
+
+**Deployment docs + config:**
+- `docs/deployment-best-practices.md` — One-instance-per-system architecture, key files reference
+- `docs/phase4-btp-deployment.md` — Added nodejs_buildpack deployment, BTP ABAP reference
+- `docs/btp-abap-environment.md` — System type config, tool adaptation table, Docker config
+- `manifest.yml` — Fixed service names, added PP/XSUAA/system type config
+- `manifest-btp-abap.yml` — New: CF manifest for BTP ABAP direct connection
+- `.env.example` — BTP, PP, XSUAA sections
+- `Dockerfile` — BTP/PP/XSUAA env var documentation
+- `CLAUDE.md` — `SAP_SYSTEM_TYPE` in config table
 
 ---
 
@@ -169,7 +212,7 @@ Two options:
 | **fr0ster/mcp-abap-adt** | Service key + browser OAuth2 | Authorization Code | No (SAML providers exist but for edge cases) |
 | **aws-abap-accelerator** | Basic Auth (dev) / X.509 certs (enterprise) | Certificate-based PP | No (SAML provider is a stub) |
 | **abap-adt-api (npm)** | BearerFetcher callback | Any (caller provides token) | No |
-| **ARC-1 (current)** | Only Destination Service → on-prem | N/A for direct BTP | No |
+| **ARC-1 (current)** | Service key + browser OAuth2 | Authorization Code | No |
 
 **Neither fr0ster nor AWS use SAML as their primary BTP auth flow.** Both have SAML providers but they are secondary/incomplete.
 
@@ -267,7 +310,7 @@ When the third parameter is a function (`BearerFetcher`), the library uses `Auth
 
 ---
 
-## 6. ARC-1 Implementation (Completed)
+## 6. ARC-1 Implementation — OAuth + Auth (Completed)
 
 ### What Was Added
 
@@ -292,18 +335,105 @@ The existing `ts-src/adt/btp.ts` Destination Service path is unchanged and still
 
 ---
 
-## 7. ARC-1 Usage — See Setup Guide
+## 7. ARC-1 Implementation — System Detection + Tool Adaptation (Completed)
 
-For end-to-end setup instructions, see **[docs/btp-abap-environment.md](../btp-abap-environment.md)**.
+### 7.1 System Type Detection
 
-Quick start:
-```bash
-SAP_BTP_SERVICE_KEY_FILE=/path/to/service-key.json arc1
+**Problem:** BTP ABAP has different capabilities from on-premise. Without detection, tools show wrong descriptions (e.g., suggesting `PROG` or `DD02L` which don't work on BTP) and return cryptic SAP errors.
+
+**Solution:** Auto-detect BTP from the `SAP_CLOUD` component in `/sap/bc/adt/system/components` (already called for ABAP release detection — zero extra HTTP calls). Manual override via `SAP_SYSTEM_TYPE=btp|onprem|auto`.
+
+**Implementation in `ts-src/adt/features.ts`:**
+
+```typescript
+export function detectSystemType(
+  components: Array<{ name: string; release: string; description: string }>,
+): SystemType {
+  const hasSapCloud = components.some((c) => c.name.toUpperCase() === 'SAP_CLOUD');
+  return hasSapCloud ? 'btp' : 'onprem';
+}
 ```
+
+Called from `probeFeatures()` which accepts a `systemTypeOverride` parameter. When `SAP_SYSTEM_TYPE` is set explicitly (not `auto`), the override is used without probing.
+
+**Why this matters for tool definitions at startup:** `getToolDefinitions()` is called at server startup before the first probe. Setting `SAP_SYSTEM_TYPE=btp` ensures correct tool definitions from the first request. With `auto`, tools start with on-prem defaults and adapt after the first `SAPManage probe` call.
+
+### 7.2 Tool Description Adaptation
+
+**Problem:** LLMs choose tools based on descriptions. If SAPRead says "read a program (PROG)" on BTP, the LLM will try it, get a cryptic error, and waste tokens retrying.
+
+**Solution:** Dynamic `getToolDefinitions(config)` with BTP-specific variants for all 11 tools.
+
+**Key changes on BTP:**
+
+| Tool | What changes |
+|------|-------------|
+| **SAPRead** | Removes PROG, INCL, VIEW, TEXT_ELEMENTS, VARIANTS, SOBJ from type enum. Returns helpful error if LLM tries them anyway. |
+| **SAPWrite** | Only CLAS, INTF. Must use ABAP Cloud syntax, Z/Y namespace. |
+| **SAPQuery** | Warns that SAP standard tables (DD02L, TADIR, etc.) are blocked. Suggests CDS views. |
+| **SAPSearch** | Notes that only released and custom objects are returned. |
+| **SAPTransport** | Explains gCTS: release = Git push, not TMS export. |
+| **SAPContext** | Only CLAS, INTF. Includes released SAP objects (they're the dev API surface on BTP). |
+| **SAPManage** | Returns `systemType` in probe results. |
+| **SAPActivate** | No change. |
+| **SAPNavigate** | Notes released object scope. |
+| **SAPLint** | No change (client-side). |
+| **SAPDiagnose** | No change. |
+
+### 7.3 Handler Behavior Adaptation
+
+**Problem:** Even with adapted descriptions, LLMs sometimes try unavailable operations. BTP ABAP returns generic HTTP 400/404 errors that don't explain *why* something failed.
+
+**Solution:** `BTP_HINTS` map in `intent.ts` catches known-unavailable operations before they hit SAP and returns actionable guidance:
+
+```typescript
+const BTP_HINTS: Record<string, string> = {
+  PROG: 'Executable programs (reports) are not available on BTP ABAP Environment. Use CLAS with IF_OO_ADT_CLASSRUN for console applications.',
+  INCL: 'Includes are not available on BTP ABAP Environment. Use private methods in classes instead.',
+  VIEW: 'Classic DDIC views are not available on BTP ABAP Environment. Use DDLS (CDS views) instead.',
+  // ... etc.
+};
+```
+
+**Design decision:** We intercept at the handler level (before hitting SAP) for known-unavailable object types. For table queries, we rely on the adapted SAPQuery description (which warns about blocked SAP standard tables and suggests CDS views) rather than trying to parse SQL and guess which tables are blocked — regex-based SQL parsing is error-prone and the set of blocked tables varies by system.
+
+### 7.4 Architecture Decision: One Instance Per SAP System
+
+**Decision:** Each ARC-1 deployment connects to exactly one SAP backend. Multiple users share the same instance via principal propagation (on-premise) or JWT Bearer Exchange (BTP).
+
+**Why not multi-backend gateway?**
+
+| Concern | One-per-system | Multi-backend gateway |
+|---------|---------------|----------------------|
+| Security | Blast radius = one system | One breach = all systems |
+| Auth | Clean: one auth flow per instance | N destinations + N auth flows |
+| Safety gates | Per-system: `readOnly`, `allowedOps`, `allowedPackages` | Can't vary per backend |
+| Tool descriptions | Tailored to system type (BTP vs on-premise) | Must be generic for all |
+| Scaling | Scale independently | Heavy-use system affects all |
+
+This is the same model used by Eclipse ADT, SAP Business Application Studio, and SAP GUI. The LLM sees separate tool sets from each MCP server and picks the right one.
+
+Documented in [deployment-best-practices.md](../deployment-best-practices.md).
 
 ---
 
-## 8. Required Communication Arrangements
+## 8. ARC-1 Usage — See Setup Guide
+
+For end-to-end setup instructions, see **[docs/btp-abap-environment.md](../btp-abap-environment.md)**.
+
+Quick start (local dev):
+```bash
+SAP_BTP_SERVICE_KEY_FILE=/path/to/service-key.json SAP_SYSTEM_TYPE=btp arc1
+```
+
+For deployment to BTP Cloud Foundry, see:
+- [deployment-best-practices.md](../deployment-best-practices.md) — Architecture, config, key files
+- [phase4-btp-deployment.md](../phase4-btp-deployment.md) — Step-by-step CF deployment (Docker + nodejs_buildpack)
+- `manifest-btp-abap.yml` — CF manifest template for BTP ABAP
+
+---
+
+## 9. Required Communication Arrangements
 
 For programmatic access to BTP ABAP Environment, certain Communication Arrangements may be needed:
 
@@ -320,7 +450,52 @@ Communication Arrangement setup:
 
 ---
 
-## 9. References
+## 10. Deferred: JWT Bearer Exchange + CI/CD Auth
+
+### JWT Bearer Exchange (CF Deployed → BTP ABAP, Multi-User)
+
+**Status:** Deferred — low priority, can be a separate PR if demand arises.
+
+**What it would do:** When ARC-1 runs as a deployed CF app serving multiple developers, each developer's MCP client authenticates via XSUAA. The MCP server would exchange that user's JWT for a BTP ABAP-scoped token via `jwt-bearer` grant, then call ADT as that specific user.
+
+**Why deferred:**
+
+1. **BTP ABAP adoption is still niche** — most SAP customers are on-premise S/4 or ECC. The on-premise flow via Cloud Connector + Principal Propagation already works.
+2. **The developer scenario already works** — local dev with `SAP_BTP_SERVICE_KEY_FILE` + browser OAuth is the realistic first touchpoint. That's implemented.
+3. **The multi-user deployed BTP ABAP scenario is rare** — very few orgs currently have (a) a CF-deployed MCP server AND (b) BTP ABAP Environment AND (c) need per-user identity propagation to it. Most BTP ABAP users would use the local dev flow.
+4. **A technical user workaround exists** — for the few who deploy on CF connecting to BTP ABAP, a shared service key (single technical user) works today. Not ideal for audit trails, but functional.
+5. **Complex to implement and test correctly** — requires XSUAA token exchange grant type config, proper service bindings, and a real multi-user BTP setup to verify.
+
+**If implemented later, it would touch:**
+- `ts-src/adt/oauth.ts` — Add `jwtBearerExchange()` function
+- `ts-src/server/server.ts` — Wire up per-request token exchange
+- `ts-src/server/http.ts` — Extract user JWT from MCP request
+
+### CI/CD Communication User Auth
+
+**Status:** Deferred — separate use case, not part of the interactive MCP flow.
+
+**What it would do:** Allow non-interactive (CI/CD) access to BTP ABAP via Communication Arrangements. A Communication User with `SAP_COM_0901` (ATC checks) or `SAP_COM_0735` (unit tests) would authenticate via Client Credentials grant.
+
+**Why deferred:**
+- CI/CD is a different use case from interactive MCP (LLM + developer)
+- Requires specific Communication Arrangement setup per scenario
+- Client Credentials returns a technical token that works for specific APIs but not general ADT access
+- Could be a separate tool or mode rather than part of the core MCP server
+
+### Future Possibilities
+
+| Feature | Effort | Value | Notes |
+|---------|--------|-------|-------|
+| JWT Bearer Exchange | Medium | Low (few users today) | Enables deployed multi-user → BTP ABAP |
+| Communication User auth | Small | Low (CI/CD only) | For ATC/unit test automation |
+| X.509 certificate auth | Large | Low (enterprise niche) | mTLS for token exchange |
+| MCP-native OAuth for BTP ABAP | Medium | Medium | Let MCP client handle the full OAuth dance against XSUAA |
+| Multi-system tool routing | Large | Medium | Single MCP server, multiple backends (decided against — see one-per-system architecture) |
+
+---
+
+## 11. References
 
 ### SAP Documentation
 - [SAP Help: ADT in BTP ABAP Environment](https://help.sap.com/docs/sap-btp-abap-environment/abap-environment/adt)

@@ -412,53 +412,9 @@ async function handleSAPSearch(client: AdtClient, args: Record<string, unknown>)
   return textResult(JSON.stringify(results, null, 2));
 }
 
-/** SAP standard tables that are known to be blocked on BTP */
-const BTP_BLOCKED_TABLES = new Set([
-  'DD02L',
-  'DD03L',
-  'DD04L',
-  'DD07L',
-  'DD09L',
-  'TADIR',
-  'TDEVC',
-  'TFDIR',
-  'ENLFDIR',
-  'SWOTLV',
-  'TOJTB',
-  'SWO_OBJECT',
-  'MARA',
-  'MAKT',
-  'MARC',
-  'VBAK',
-  'VBAP',
-  'BKPF',
-  'BSEG',
-  'KNA1',
-  'LFA1',
-  'T000',
-  'T001',
-  'USR02',
-]);
-
 async function handleSAPQuery(client: AdtClient, args: Record<string, unknown>): Promise<ToolResult> {
   const sql = String(args.sql ?? '');
   const maxRows = Number(args.maxRows ?? 100);
-
-  // BTP: warn about SAP standard tables before even attempting the query
-  if (isBtpSystem()) {
-    const tableMatch = sql.match(/FROM\s+["']?([A-Za-z0-9_/$]+)["']?/i);
-    if (tableMatch) {
-      const tableName = tableMatch[1]!.toUpperCase();
-      if (BTP_BLOCKED_TABLES.has(tableName)) {
-        return errorResult(
-          `Table "${tableName}" is not accessible on BTP ABAP Environment. ` +
-            'SAP standard tables are restricted on BTP — only custom Z/Y tables and released CDS entities can be queried.\n\n' +
-            'Use released CDS views instead: I_LANGUAGE, I_COUNTRY, I_CURRENCY, I_UnitOfMeasure, I_BusinessPartner, etc.\n' +
-            'To discover available CDS views: SAPSearch(query="I_*", maxResults=20)',
-        );
-      }
-    }
-  }
 
   try {
     const data = await client.runQuery(sql, maxRows);
@@ -469,16 +425,6 @@ async function handleSAPQuery(client: AdtClient, args: Record<string, unknown>):
       const tableMatch = sql.match(/FROM\s+["']?([A-Za-z0-9_/$]+)["']?/i);
       if (tableMatch) {
         const tableName = tableMatch[1]!;
-
-        // BTP-specific error message for any table not found
-        if (isBtpSystem()) {
-          return errorResult(
-            `Table "${tableName}" not found or not accessible on BTP ABAP Environment.\n\n` +
-              'On BTP, only custom Z/Y tables and released CDS entities can be queried. ' +
-              'SAP standard tables are blocked.\n\n' +
-              'Use released CDS views instead: SAPSearch(query="I_*") to discover available CDS views.',
-          );
-        }
 
         try {
           const suggestions = await client.searchObject(`${tableName}*`, 10);

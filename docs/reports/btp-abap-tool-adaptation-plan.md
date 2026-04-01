@@ -1,8 +1,9 @@
 # BTP ABAP Environment — Tool Adaptation Plan
 
-**Status:** Research complete, ready for implementation
+**Status:** Phases 1–3 implemented and tested. Phase 4 (JWT Bearer Exchange) deferred.
 **PR:** #18 (`feat/btp-abap-direct-oauth-v2`)
 **Date:** 2026-04-01
+**Last updated:** 2026-04-01
 
 ## Executive Summary
 
@@ -236,13 +237,13 @@ ADT requires user context. Client Credentials grant produces a "technical" token
 
 ### 3.7 Auth Decision Matrix
 
-| Scenario | Recommended Auth | Config |
-|----------|-----------------|--------|
-| **Local dev → BTP ABAP** | Service Key + Auth Code (browser) | `SAP_BTP_SERVICE_KEY_FILE` |
-| **CI/CD → BTP ABAP** | Communication User + Client Credentials (via Comm. Arrangement) | Future: `SAP_BTP_COMM_USER` |
-| **CF deployed → BTP ABAP (multi-user)** | JWT Bearer Exchange | Future: Destination Service with OAuth2SAMLBearerAssertion |
-| **Local dev → On-Premise** | Basic Auth | `SAP_USER` + `SAP_PASSWORD` |
-| **CF deployed → On-Premise** | Destination Service + PP | Existing: `SAP_BTP_DESTINATION` + `SAP_BTP_PP_DESTINATION` |
+| Scenario | Recommended Auth | Config | Status |
+|----------|-----------------|--------|--------|
+| **Local dev → BTP ABAP** | Service Key + Auth Code (browser) | `SAP_BTP_SERVICE_KEY_FILE` | ✅ Implemented |
+| **Local dev → On-Premise** | Basic Auth | `SAP_USER` + `SAP_PASSWORD` | ✅ Implemented |
+| **CF deployed → On-Premise** | Destination Service + PP | `SAP_BTP_DESTINATION` + `SAP_BTP_PP_DESTINATION` | ✅ Implemented |
+| **CF deployed → BTP ABAP (multi-user)** | JWT Bearer Exchange | Future: Destination Service with OAuth2SAMLBearerAssertion | ⏭️ Deferred (rare scenario, low demand) |
+| **CI/CD → BTP ABAP** | Communication User + Client Credentials (via Comm. Arrangement) | Future: `SAP_BTP_COMM_USER` | ⏭️ Deferred (different use case) |
 
 ### 3.8 Communication Arrangements for CI/CD
 
@@ -261,7 +262,7 @@ For non-interactive (CI/CD) access to BTP ABAP, you need:
 
 ## 4. Implementation Plan
 
-### Phase 1: System Detection (small, foundational)
+### Phase 1: System Detection ✅ Completed
 
 **Files:** `ts-src/adt/types.ts`, `ts-src/adt/features.ts`, `ts-src/server/types.ts`, `ts-src/server/config.ts`
 
@@ -273,7 +274,7 @@ For non-interactive (CI/CD) access to BTP ABAP, you need:
 
 **Tests:** Unit test for detection logic, integration test on BTP system.
 
-### Phase 2: Tool Description Adaptation (medium, high impact)
+### Phase 2: Tool Description Adaptation ✅ Completed
 
 **Files:** `ts-src/handlers/tools.ts`
 
@@ -299,7 +300,7 @@ For non-interactive (CI/CD) access to BTP ABAP, you need:
 - Handler adds a BTP context note to responses when relevant (e.g., "Note: On BTP ABAP, classic programs are not available. Use CLAS with IF_OO_ADT_CLASSRUN instead.")
 - If `SAP_SYSTEM_TYPE=btp` is set explicitly, tool definitions are adapted at registration time
 
-### Phase 3: Handler Behavior Adaptation (medium)
+### Phase 3: Handler Behavior Adaptation ✅ Completed
 
 **Files:** `ts-src/handlers/intent.ts`
 
@@ -311,7 +312,7 @@ For non-interactive (CI/CD) access to BTP ABAP, you need:
 3. For adapted operations, add context notes:
    - `SAPTransport release` → append note about gCTS behavior
 
-### Phase 4: JWT Bearer Exchange for Deployed Scenarios (larger, separate PR)
+### Phase 4: JWT Bearer Exchange for Deployed Scenarios ⏭️ Deferred
 
 **Files:** `ts-src/adt/oauth.ts`, `ts-src/adt/btp.ts`, `ts-src/server/server.ts`
 
@@ -320,6 +321,8 @@ For non-interactive (CI/CD) access to BTP ABAP, you need:
 3. Exchange user JWT for ABAP-scoped token via `jwt-bearer` grant
 4. Use resulting token as Bearer auth to BTP ABAP
 5. Per-user identity preserved without browser
+
+**Why deferred:** BTP ABAP adoption is still niche. Most users will use the local dev flow (service key + browser OAuth) which is already implemented. The CF deployed multi-user → BTP ABAP scenario is rare today — very few orgs have all the prerequisites. A shared service key (single technical user) works as a functional workaround. JWT Bearer Exchange can be implemented in a separate PR when there's actual demand. See the [connectivity report](btp-abap-environment-connectivity.md#10-deferred-jwt-bearer-exchange) for full reasoning.
 
 ---
 
@@ -431,15 +434,15 @@ For non-interactive (CI/CD) access to BTP ABAP, you need:
 
 ## 7. Competitor Comparison
 
-| Feature | ARC-1 (planned) | fr0ster/mcp-abap-adt | Eclipse ADT |
-|---------|-----------------|---------------------|-------------|
+| Feature | ARC-1 (implemented) | fr0ster/mcp-abap-adt | Eclipse ADT |
+|---------|---------------------|---------------------|-------------|
 | Detection method | Auto (SAP_CLOUD component) + manual override | Manual only (`SAP_SYSTEM_TYPE` env var) | Discovery XML |
 | Tool filtering | Adapt descriptions + handler behavior | Remove tools entirely (`available_in`) | Hide UI elements |
-| Error handling | Helpful BTP-specific messages | Silent tool removal | Greyed-out options |
+| Error handling | Helpful BTP-specific messages with alternatives | Silent tool removal | Greyed-out options |
 | System types | `btp`, `onprem`, `auto` | `cloud`, `onprem`, `legacy` | Implicit |
-| Auth options | Service Key + Auth Code, future JWT Bearer | 9 auth providers | SAML/OAuth |
+| Auth options | Service Key + Auth Code (browser) | 9 auth providers | SAML/OAuth |
 
-**ARC-1's advantage:** Auto-detection (fr0ster removed theirs) + helpful error messages (better than silent removal).
+**ARC-1's advantage:** Auto-detection (fr0ster removed theirs) + helpful error messages with actionable alternatives (better than silent removal) + adapted tool descriptions that guide LLMs away from unavailable operations.
 
 ---
 
