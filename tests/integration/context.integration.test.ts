@@ -14,13 +14,46 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { AdtClient } from '../../src/adt/client.js';
-import { compressContext } from '../../src/context/compressor.js';
+import { extractCdsDependencies, extractCdsElements } from '../../src/context/cds-deps.js';
+import { compressCdsContext, compressContext } from '../../src/context/compressor.js';
 import { extractContract } from '../../src/context/contract.js';
 import { extractDependencies } from '../../src/context/deps.js';
 import { extractMethod, listMethods, spliceMethod } from '../../src/context/method-surgery.js';
 import { getTestClient, hasSapCredentials } from './helpers.js';
 
 const describeIf = hasSapCredentials() ? describe : describe.skip;
+
+/** Well-known CDS views that may exist on SAP demo systems */
+const DDLS_CANDIDATES = ['/DMO/I_TRAVEL', '/DMO/I_FLIGHT', '/DMO/I_BOOKING', 'I_LANGUAGE', 'SEPM_I_SALESORDER'];
+
+/** Try to find any readable DDLS on the system — returns name + source, or undefined */
+async function findAnyDdls(client: AdtClient): Promise<{ name: string; source: string } | undefined> {
+  // Try well-known names first
+  for (const name of DDLS_CANDIDATES) {
+    try {
+      const source = await client.getDdls(name);
+      if (source) return { name, source };
+    } catch {
+      // Not available — try next
+    }
+  }
+  // Fall back to searching for any DDLS
+  try {
+    const results = await client.searchObject('*', 20);
+    const ddls = results.filter((r) => r.objectType?.startsWith('DDLS'));
+    for (const r of ddls) {
+      try {
+        const source = await client.getDdls(r.objectName);
+        if (source) return { name: r.objectName, source };
+      } catch {
+        // Can't read this one — try next
+      }
+    }
+  } catch {
+    // Search failed
+  }
+  return undefined;
+}
 
 describeIf('SAPContext Integration Tests', () => {
   let client: AdtClient;
@@ -224,6 +257,77 @@ describeIf('SAPContext Integration Tests', () => {
       // Should achieve at least 50% reduction (typically 90%+)
       expect(reduction).toBeGreaterThan(0.5);
     }, 15000);
+  });
+
+  // ─── CDS Context Compression ───────────────────────────────────────
+  // Dynamically discover a DDLS on the system. Try well-known names,
+  // then fall back to searching for any DDLS/S object.
+
+  describe('CDS dependency extraction', () => {
+    let ddlSource: string | undefined;
+    let cdsName: string | undefined;
+
+    beforeAll(async () => {
+      const found = await findAnyDdls(client);
+      cdsName = found?.name;
+      ddlSource = found?.source;
+    }, 30000);
+
+    it('extracts dependencies from CDS DDL source', async () => {
+      if (!ddlSource || !cdsName) return;
+      const deps = extractCdsDependencies(ddlSource);
+
+      expect(deps.length).toBeGreaterThan(0);
+      for (const dep of deps) {
+        expect(dep.name).toBeTruthy();
+        expect(dep.kind).toBeTruthy();
+      }
+    });
+
+    it('extracts elements from CDS DDL source', async () => {
+      if (!ddlSource || !cdsName) return;
+      const elements = extractCdsElements(ddlSource, cdsName);
+
+      expect(elements).toContain(`=== ${cdsName} elements ===`);
+      // CDS views have a projection list with fields
+      expect(elements.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('CDS full compression', () => {
+    let ddlSource: string | undefined;
+    let cdsName: string | undefined;
+
+    beforeAll(async () => {
+      const found = await findAnyDdls(client);
+      cdsName = found?.name;
+      ddlSource = found?.source;
+    }, 30000);
+
+    it('compresses CDS context', async () => {
+      if (!ddlSource || !cdsName) return;
+      const result = await compressCdsContext(client, ddlSource, cdsName, 5, 1);
+
+      expect(result.depsResolved).toBeGreaterThan(0);
+      expect(result.output).toContain(`CDS dependency context for ${cdsName}`);
+      expect(result.output).toContain('Stats:');
+      expect(result.objectType).toBe('DDLS');
+    }, 30000);
+
+    it('respects maxDeps limit for CDS context', async () => {
+      if (!ddlSource || !cdsName) return;
+      const result = await compressCdsContext(client, ddlSource, cdsName, 2, 1);
+
+      expect(result.depsResolved).toBeLessThanOrEqual(2);
+    }, 30000);
+
+    it('compresses CDS context with depth=2', async () => {
+      if (!ddlSource || !cdsName) return;
+      const shallow = await compressCdsContext(client, ddlSource, cdsName, 5, 1);
+      const deep = await compressCdsContext(client, ddlSource, cdsName, 5, 2);
+
+      expect(deep.depsResolved).toBeGreaterThanOrEqual(shallow.depsResolved);
+    }, 60000);
   });
 
   // ─── SAPManage Feature Probing ────────────────────────────────────
