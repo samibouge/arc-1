@@ -26,6 +26,7 @@ import {
 } from '../adt/diagnostics.js';
 import { AdtApiError, AdtNetworkError, AdtSafetyError } from '../adt/errors.js';
 import { mapSapReleaseToAbaplintVersion, probeFeatures } from '../adt/features.js';
+import { isOperationAllowed, OperationType } from '../adt/safety.js';
 import { createTransport, getTransport, listTransports, releaseTransport } from '../adt/transport.js';
 import type { ResolvedFeatures } from '../adt/types.js';
 import { compressContext } from '../context/compressor.js';
@@ -261,6 +262,7 @@ const BTP_HINTS: Record<string, string> = {
     'Text elements are not available on BTP ABAP Environment (no classic programs). Use message classes or constant classes instead.',
   VARIANTS: 'Variants are not available on BTP ABAP Environment (no classic programs).',
   SOBJ: 'BOR business objects (SOBJ) are not available on BTP ABAP Environment. Use RAP behavior definitions (BDEF) instead.',
+  TRAN: 'Transaction codes (TRAN) are not available on BTP ABAP Environment. Use SAPSearch to find apps and services instead.',
 };
 
 async function handleSAPRead(client: AdtClient, args: Record<string, unknown>): Promise<ToolResult> {
@@ -326,6 +328,32 @@ async function handleSAPRead(client: AdtClient, args: Record<string, unknown>): 
       return textResult(await client.getTable(name));
     case 'VIEW':
       return textResult(await client.getView(name));
+    case 'STRU':
+      return textResult(await client.getStructure(name));
+    case 'DOMA': {
+      const domain = await client.getDomain(name);
+      return textResult(JSON.stringify(domain, null, 2));
+    }
+    case 'DTEL': {
+      const dtel = await client.getDataElement(name);
+      return textResult(JSON.stringify(dtel, null, 2));
+    }
+    case 'TRAN': {
+      const tran = await client.getTransaction(name);
+      // Enrich with program name via SQL — only if free SQL is allowed by safety config
+      if (isOperationAllowed(client.safety, OperationType.FreeSQL)) {
+        try {
+          const safeName = name.toUpperCase().replace(/[^A-Z0-9_/]/g, '');
+          const data = await client.runQuery(`SELECT TCODE, PGMNA FROM TSTC WHERE TCODE = '${safeName}'`, 1);
+          if (data.rows.length > 0) {
+            tran.program = String(data.rows[0]!.PGMNA ?? '').trim();
+          }
+        } catch {
+          // SQL failed (e.g., TSTC not found on BTP) — still return metadata
+        }
+      }
+      return textResult(JSON.stringify(tran, null, 2));
+    }
     case 'TABLE_CONTENTS': {
       const maxRows = Number(args.maxRows ?? 100);
       const data = await client.getTableContents(name, maxRows, args.sqlFilter as string | undefined);
@@ -389,7 +417,7 @@ async function handleSAPRead(client: AdtClient, args: Record<string, unknown>): 
       return textResult(await client.getVariants(name));
     default:
       return errorResult(
-        `Unknown SAPRead type: ${type}. Supported: PROG, CLAS, INTF, FUNC, FUGR, INCL, DDLS, BDEF, SRVD, TABL, VIEW, TABLE_CONTENTS, DEVC, SOBJ, SYSTEM, COMPONENTS, MESSAGES, TEXT_ELEMENTS, VARIANTS`,
+        `Unknown SAPRead type: ${type}. Supported: PROG, CLAS, INTF, FUNC, FUGR, INCL, DDLS, BDEF, SRVD, TABL, VIEW, STRU, DOMA, DTEL, TRAN, TABLE_CONTENTS, DEVC, SOBJ, SYSTEM, COMPONENTS, MESSAGES, TEXT_ELEMENTS, VARIANTS`,
       );
   }
 }
