@@ -1,6 +1,6 @@
 # ARC-1 Roadmap
 
-**Last Updated:** 2026-03-27
+**Last Updated:** 2026-04-04
 **Project:** ARC-1 (ABAP Relay Connector) — MCP Server for SAP ABAP Systems
 **Repository:** https://github.com/marianfoo/arc-1
 
@@ -8,40 +8,55 @@
 
 ## Vision
 
-ARC-1 is a **TypeScript MCP server** that connects SAP ABAP systems to AI-powered clients. It serves as a secure bridge between:
+Every other SAP MCP server today runs on the developer's local machine — unmanaged, unaudited, with whatever permissions the developer happens to have. There is no admin oversight, no token budget control, no audit trail, and no way to restrict what an LLM can do to an SAP system.
 
-- **SAP Systems** (on-premise via direct connection or Cloud Connector, BTP Cloud Foundry)
-- **AI Clients** (Microsoft Copilot Studio, Claude Code/Desktop, VS Code, Gemini CLI, and any MCP-compatible client)
+**ARC-1 is different.** It is a **centralized, admin-controlled MCP gateway** deployed on BTP Cloud Foundry or a company server (Docker). One instance per SAP system, serving multiple users. The admin controls which tools are exposed, which packages can be touched, and whether writes are allowed — before any LLM request reaches SAP.
 
-The core design principles are:
-1. **Security first** — read-only by default, per-user SAP authorization, admin-controlled tool surface
-2. **npm package + Docker** — `npx arc-1` or `ghcr.io/marianfoo/arc-1`, Node.js 20+
-3. **Intent-based tools** — 11 tools with rich descriptions, optimized for mid-tier LLMs
-4. **Dual deployment** — local (stdio) for developers, HTTP Streamable for enterprise/cloud
+### Core Design Principles
+
+1. **Centralized admin control** — ARC-1 runs as a managed service, not on developer laptops. Admins configure safety gates (read-only, package allowlists, operation filters, SQL blocking, transport guards) per instance. Every tool call is audited with user identity. Developers and LLMs operate within guardrails set by the organization — not by individual choice.
+
+2. **Per-user SAP identity** — Principal propagation maps each MCP user to their own SAP user via BTP Destination Service + Cloud Connector. SAP's native authorization (S_DEVELOP, package checks) applies per user. No shared service accounts, no credential leakage. The LLM acts with exactly the permissions the SAP user has — nothing more.
+
+3. **Token-efficient tool design** — 11 intent-based tools (~5K schema tokens) instead of 200+ individual endpoints. This isn't just cleaner — it's the difference between working and not working on mid-tier LLMs (GPT-4o-mini, Gemini Flash, Copilot Studio). Hyperfocused mode reduces to 1 tool (~200 tokens). Method-level surgery and context compression (7-30x) keep responses within tight context windows.
+
+4. **BTP-native deployment** — Designed for SAP BTP Cloud Foundry with Destination Service, Cloud Connector, XSUAA OAuth, and BTP Audit Log Service. Also deployable as Docker on any server. Local stdio mode is supported for development and testing, but the production target is always a centralized instance.
+
+5. **Multi-client, vendor-neutral** — Works with any MCP-compatible client: Claude Code/Desktop, Microsoft Copilot Studio, VS Code (GitHub Copilot), Gemini CLI, Cursor, and others. The same ARC-1 instance serves all of them. Three auth modes coexist (XSUAA + OIDC/Entra ID + API key) so different client types connect through the same gateway.
+
+6. **Safe defaults, opt-in power** — Read-only by default. Free SQL blocked by default. No write operations until the admin explicitly enables them. This inverts the model of every other MCP server where everything is allowed until someone thinks to restrict it.
 
 ---
 
-## Current State (v3.0.0-alpha.1 — TypeScript)
+## Current State (v0.3.0 — TypeScript)
 
 | Area | Status |
 |------|--------|
 | TypeScript Migration | ✅ Complete — Go code removed, pure TypeScript |
-| Core MCP Server | ✅ 11 intent-based tools, HTTP Streamable + stdio |
-| Safety System | ✅ Read-only, package filter, operation filter, transport guard |
+| Core MCP Server | ✅ 11 intent-based tools + hyperfocused mode (1 tool), HTTP Streamable + stdio |
+| Safety System | ✅ Read-only, package filter, operation filter, transport guard, dry-run |
 | Phase 1: API Key Auth | ✅ `ARC1_API_KEY` Bearer token |
 | Phase 2: OAuth/OIDC (Entra ID) | ✅ JWT validation via `jose` library, tested with Copilot Studio |
 | Phase 4: BTP CF Deployment | ✅ Docker on CF with Destination Service + Cloud Connector |
 | BTP Destination Service | ✅ Auto-resolves SAP credentials from BTP Destination at startup |
 | BTP Connectivity Proxy | ✅ Routes through Cloud Connector with JWT Proxy-Authorization |
+| BTP ABAP Environment | ✅ OAuth 2.0 browser login, direct connectivity |
 | ABAP Linter | ✅ `@abaplint/core` integration (full abaplint rules) |
 | Docker Image | ✅ Multi-platform (amd64/arm64), GHCR `ghcr.io/marianfoo/arc-1` |
 | CI/CD | ✅ GitHub Actions: lint + typecheck + unit tests (Node 20/22) + integration tests |
 | XSUAA OAuth Proxy | ✅ MCP SDK ProxyOAuthServerProvider + @sap/xssec JWT validation |
 | Scope Enforcement | ✅ Per-tool scope checks (read/write/admin), ListTools filtered by scope |
-| Audit Logging | ✅ User identity (userName, email, clientId) in every tool call log |
+| Audit Logging | ✅ User identity in tool call logs, BTP Audit Log sink, file sink |
+| MCP Elicitation | ✅ Interactive parameter collection for destructive ops |
 | Dynamic Client Registration | ✅ /register endpoint for MCP clients (RFC 7591) |
 | Principal Propagation | ✅ Per-user ADT client via BTP Destination Service + Cloud Connector |
-| Test Coverage | ✅ 358 unit tests + 28 integration tests (vitest) |
+| Hyperfocused Mode | ✅ Single `SAP` tool (~200 tokens) — competitive parity with VSP |
+| Method-Level Surgery | ✅ `edit_method` in SAPWrite, `list_methods`/`get_method` in SAPContext (95% token reduction) |
+| Runtime Diagnostics | ✅ SAPDiagnose — short dumps (ST22), ABAP profiler traces |
+| DDIC Completeness | ✅ Structures, domains, data elements, DDLX, transactions, BOR objects, T100 messages |
+| RAP CRUD | ✅ DDLS, DDLX, BDEF, SRVD write + SRVB read |
+| Context Compression | ✅ SAPContext with AST-based dependency extraction (7-30x reduction) |
+| Test Coverage | ✅ 707+ unit tests + 28 BTP integration tests (vitest) |
 | Documentation | ✅ Architecture, auth guides, Docker guide, setup phases |
 
 ---
@@ -127,23 +142,13 @@ The core design principles are:
 ### SEC-03: SAP Authorization Object Awareness (S_DEVELOP)
 | Field | Value |
 |-------|-------|
-| **Priority** | 🟡 P2 |
-| **Effort** | S (1–2 days) |
-| **Risk** | Low |
-| **Usefulness** | Medium — better error messages, admin guidance |
-| **Status** | Not started |
+| **Priority** | — |
+| **Effort** | — |
+| **Risk** | — |
+| **Usefulness** | — |
+| **Status** | ✅ Subsumed by FEAT-16 (Error Intelligence) |
 
-**What:** When SAP returns a 403/authorization error on an ADT call, ARC-1 should detect the S_DEVELOP authorization object failure and return a helpful message explaining which authorization is missing (e.g., "User DEVELOPER lacks S_DEVELOP authorization for ACTVT=02 (Change) on OBJTYPE=PROG in DEVCLASS=$TMP").
-
-**Why:** Currently ADT returns generic HTML 403 pages. A developer or admin troubleshooting "why can't the AI create a program?" gets no actionable guidance. This is especially important when principal propagation is active and different users have different SAP authorization profiles.
-
-**Implementation:**
-- Parse the ADT error response XML for authorization object details
-- Map SAP authorization error codes to human-readable messages
-- Include in tool error responses: what authorization is needed, which transaction to check (SU53, PFCG)
-
-**References:**
-- [SAP Help: S_DEVELOP Authorization Object](https://help.sap.com/docs/SAP_Solution_Manager/fd3c83ed48684640a18ac05c8ae4d016/4fa00d670cff44a5958237334a88af84.html)
+**Merged:** SEC-03's scope (parsing 403 authorization errors, mapping to S_DEVELOP objects, suggesting SU53/PFCG) is now part of FEAT-16 Error Intelligence, which covers all SAP error codes (403, 409, 423, 415) with actionable hints. See FEAT-16 for details.
 
 ---
 
@@ -154,18 +159,16 @@ The core design principles are:
 | **Effort** | M (3–5 days) |
 | **Risk** | Low |
 | **Usefulness** | High — required for enterprise compliance |
-| **Status** | ✅ Mostly complete (2026-03-27) — user context in logs, remaining: correlation ID, log-to-file |
+| **Status** | ✅ Complete (2026-04-01) — multi-sink audit system with BTP Audit Log Service |
 
-**Implemented (2026-03-27):**
-- User identity (userName, email, clientId) logged with every tool call via `authInfo.extra`
-- Structured logger (`src/server/logger.ts`) with text/JSON output and sensitive field redaction
-- Tool call duration, success/error status in every log entry
-- Works for XSUAA (JWT claims), OIDC (sub), and API key auth
-
-**Remaining:**
-- Correlation ID from MCP session headers
-- SAP user identity (when principal propagation is implemented)
-- Log output to file or syslog (currently stderr only)
+**Implemented:**
+- `src/server/audit.ts` — central audit logger with pluggable sinks
+- `src/server/sinks/stderr.ts` — stderr sink (default)
+- `src/server/sinks/file.ts` — file sink for persistent audit trail
+- `src/server/sinks/btp-auditlog.ts` — BTP Audit Log Service sink (enterprise compliance)
+- User identity (userName, email, clientId) logged with every tool call
+- Elicitation events (confirmations, user choices) logged
+- Structured logger with text/JSON output and sensitive field redaction
 
 **References:**
 - [OWASP: MCP Server Security - Logging](https://genai.owasp.org/resource/a-practical-guide-for-secure-mcp-server-development/)
@@ -309,13 +312,13 @@ SAP_RATE_LIMIT_BURST=10  # burst allowance
 ### FEAT-04: DDIC Object Support (Domains, Data Elements, DDLX)
 | Field | Value |
 |-------|-------|
-| **Priority** | 🟡 P2 |
-| **Effort** | M (3–5 days) |
-| **Risk** | Low |
-| **Usefulness** | Medium — needed for full data model management |
-| **Status** | Not started |
+| **Priority** | — |
+| **Effort** | — |
+| **Risk** | — |
+| **Usefulness** | — |
+| **Status** | ✅ Complete (2026-04-01) |
 
-**What:** CRUD operations for DDIC domains, data elements, and CDS metadata extensions (DDLX). Uses ADT endpoints `/sap/bc/adt/ddic/domains`, `/sap/bc/adt/ddic/dataelements`, `/sap/bc/adt/ddic/ddlx/sources`.
+**Implemented:** Read support for domains (DOMA), data elements (DTEL), structures (STRU), CDS metadata extensions (DDLX), and transactions (TRAN) in SAPRead. Structured metadata output with type info, labels, value tables, search help. Write support for DDLS, DDLX, BDEF, SRVD via SAPWrite.
 
 ---
 
@@ -347,18 +350,379 @@ SAP_RATE_LIMIT_BURST=10  # burst allowance
 
 ---
 
-## 🏗️ Infrastructure & Operations
+### FEAT-07: TLS/HTTPS for HTTP Streamable Transport
+| Field | Value |
+|-------|-------|
+| **Priority** | 🔴 P0 |
+| **Effort** | S (1–2 days) |
+| **Risk** | Low |
+| **Usefulness** | High — required for production enterprise deployments without reverse proxy |
+| **Status** | Not started |
+| **Source** | [fr0ster tracker: TLS evaluation](../compare/fr0ster/evaluations/tls-https-support.md) |
 
-### OPS-01: Structured JSON Logging
+**What:** Add native TLS support to the HTTP Streamable transport. fr0ster added this in v4.6.0 with `--tls-cert`/`--tls-key` flags. Currently ARC-1 requires a reverse proxy (nginx, CF router) for HTTPS.
+
+**Why:** Enterprise customers deploying outside BTP CF (e.g., on VMs, Kubernetes) need HTTPS without an external proxy. fr0ster's implementation shows the pattern: load cert/key files, create `https.Server` instead of `http.Server`.
+
+**Implementation:**
+- Add `SAP_TLS_CERT` / `SAP_TLS_KEY` env vars (and `--tls-cert` / `--tls-key` CLI flags)
+- In `src/server/http.ts`, conditionally create `https.createServer()` when cert/key are provided
+- Auto-detect port 443 vs 8080 based on TLS mode
+
+---
+
+### FEAT-08: Content-Type 415/406 Auto-Retry
+| Field | Value |
+|-------|-------|
+| **Priority** | 🔴 P0 |
+| **Effort** | XS (< 1 day) |
+| **Risk** | Low |
+| **Usefulness** | High — robustness fix for SAP system variations |
+| **Status** | Not started |
+| **Source** | [fr0ster tracker: 415 evaluation](../compare/fr0ster/evaluations/415-content-type-retry.md), [VSP tracker: issue #9](../compare/vibing-steampunk/evaluations/issue-9-transport-accept-header.md) |
+
+**What:** SAP systems vary in Accept/Content-Type expectations across versions and endpoint types. When a request gets 415 (Unsupported Media Type) or 406 (Not Acceptable), automatically retry with alternative Content-Type headers.
+
+**Why:** Both fr0ster (issue #22/#23) and VSP (issue #9) hit this on transport endpoints. It's a common SAP ADT compatibility issue across system versions. A transparent retry in `src/adt/http.ts` would handle it for all endpoints.
+
+**Implementation:**
+- In `src/adt/http.ts`, intercept 415/406 responses
+- Retry with `Accept: application/xml` → `Accept: */*` (or vice versa)
+- Retry with `Content-Type: application/xml` → `text/plain` for transport endpoints
+- Max 1 retry, log the fallback
+
+---
+
+### FEAT-09: SQL Trace Monitoring
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | S (1–2 days) |
+| **Risk** | Low |
+| **Usefulness** | Medium — performance diagnostics |
+| **Status** | Not started |
+| **Source** | [Feature matrix #17](../compare/00-feature-matrix.md) |
+
+**What:** Read SQL trace state, list SQL traces, analyze trace results. Uses ADT endpoints `/sap/bc/adt/runtime/traces/sql/*`. VSP has `GetSQLTraceState`, `ListSQLTraces`.
+
+**Why:** Completes the diagnostics story alongside short dumps and profiler traces. Useful for AI-assisted performance analysis.
+
+---
+
+### FEAT-10: PrettyPrint (Code Formatting)
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | XS (< 1 day) |
+| **Risk** | Low |
+| **Usefulness** | Medium — code formatting via ADT API |
+| **Status** | Not started |
+| **Source** | [Feature matrix #14](../compare/00-feature-matrix.md) |
+
+**What:** Format ABAP source code via ADT's PrettyPrint API. VSP and mcp-abap-abap-adt-api have this. Also includes get/set PrettyPrinter settings.
+
+---
+
+### FEAT-11: Inactive Objects List
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | XS (< 1 day) |
+| **Risk** | Low |
+| **Usefulness** | Medium — development workflow improvement |
+| **Status** | Not started |
+| **Source** | [Feature matrix #19](../compare/00-feature-matrix.md) |
+
+**What:** List inactive objects system-wide. VSP and fr0ster both have this. Uses `/sap/bc/adt/activation/inactive`.
+
+---
+
+### FEAT-12: Fix Proposals / Auto-Fix from ATC
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟠 P1 |
+| **Effort** | S (1–2 days) |
+| **Risk** | Low |
+| **Usefulness** | High — safer than LLM-guessed fixes |
+| **Status** | Not started |
+| **Source** | [abap-adt-api eval](../compare/abap-adt-api/evaluations/issue-37-quickfix.md) |
+
+**What:** When ATC or syntax check finds an issue, SAP's fix proposal API (`/sap/bc/adt/quickfixes`) suggests the exact correction. Expose this via SAPDiagnose or SAPWrite so the LLM can apply verified fixes instead of guessing.
+
+**Why:** Far safer than having the LLM guess the fix. Directly supports **safe defaults** and **token efficiency** — the LLM gets the exact fix without trial-and-error. The `abap-adt-api` library implements `fixProposals` and `fixEdits`.
+
+---
+
+### FEAT-13: DDIC Domain/Data Element Write
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟠 P1 |
+| **Effort** | S (1–2 days) |
+| **Risk** | Low |
+| **Usefulness** | High — completes AI-assisted data modeling |
+| **Status** | Not started |
+| **Source** | [abap-adt-api eval](../compare/abap-adt-api/evaluations/646bb9b-dtel-doma-write.md) |
+
+**What:** ARC-1 reads DOMA/DTEL but can't write properties or fixed values. The `abap-adt-api` library (v7.1.1) added `createDomainDefinition`, `createDataElement`, and `createStructure` with full property support. Add write support for these in SAPWrite.
+
+**Why:** Blocks full AI-assisted data modeling workflows. A developer asking the LLM to "create a domain ZSTATUS with values A=Active, I=Inactive" currently can't be fulfilled end-to-end.
+
+---
+
+### FEAT-14: 401 Session Timeout Auto-Retry
+| Field | Value |
+|-------|-------|
+| **Priority** | 🔴 P0 |
+| **Effort** | XS (< 1 day) |
+| **Risk** | Low |
+| **Usefulness** | High — prevents mid-conversation failures |
+| **Status** | Not started |
+| **Source** | [VSP eval](../compare/vibing-steampunk/evaluations/d73460a-401-auto-retry.md) |
+
+**What:** After idle, SAP returns 401. ARC-1 handles CSRF 403 refresh but may not handle 401 session timeout. Add silent re-authentication and retry on 401 in `src/adt/http.ts`.
+
+**Why:** Mid-conversation failures are disruptive to LLM workflows. VSP (#32) and `abap-adt-api` both handle this. A centralized gateway that stays idle between user requests will hit this frequently.
+
+---
+
+### FEAT-15: Namespace URL Encoding Audit
 | Field | Value |
 |-------|-------|
 | **Priority** | 🟠 P1 |
 | **Effort** | XS (< 1 day) |
 | **Risk** | Low |
-| **Usefulness** | High — required for cloud-native operations |
-| **Status** | ✅ Mostly complete — `src/server/logger.ts` with text/JSON output, field redaction |
+| **Usefulness** | High — prevents hard-to-debug failures |
+| **Status** | Not started |
+| **Source** | [VSP eval](../compare/vibing-steampunk/evaluations/59b4b90-namespace-url-encoding.md), [VSP eval](../compare/vibing-steampunk/evaluations/6d1f00a-namespace-syntax-check.md) |
 
-**What:** Structured logging is implemented (`src/server/logger.ts`). Remaining: add correlation IDs from MCP session, add user context from OIDC JWT, configure JSON vs text via env var.
+**What:** Namespaced objects (`/NAMESPACE/CLASS`) fail if `/` is not correctly encoded in ADT URLs. VSP hit this in issues #18, #52. Audit all `encodeURIComponent` usage in `src/adt/client.ts` and `src/adt/http.ts`.
+
+---
+
+### FEAT-16: Error Intelligence (Actionable Hints)
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟠 P1 |
+| **Effort** | S (1–2 days) |
+| **Risk** | Low |
+| **Usefulness** | High — directly improves admin control and LLM UX |
+| **Status** | Not started |
+| **Source** | Dassian pattern, Roadmap SEC-03 |
+
+**What:** When SAP returns common errors (409 locked, 423 enqueued, 403 auth, 415 content type), return actionable hints: "Object locked by user X — check SM12", "Authorization failed — check SU53/PFCG", "Transport required — check SE09". Subsumes SEC-03 (S_DEVELOP awareness).
+
+**Why:** Supports **centralized admin control** — admins and LLMs get clear guidance instead of raw SAP error HTML. Dassian does this well with its error intelligence pattern.
+
+---
+
+### FEAT-17: Type Auto-Mappings for SAPWrite
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟠 P1 |
+| **Effort** | XS (< 1 day) |
+| **Risk** | Low |
+| **Usefulness** | Medium — reduces LLM confusion |
+| **Status** | Not started |
+| **Source** | Dassian pattern |
+
+**What:** Auto-map friendly type codes to ADT internal codes: `CLAS` → `CLAS/OC`, `INTF` → `INTF/OI`, `PROG` → `PROG/P`, etc. LLMs shouldn't need to know ADT's internal type code suffixes.
+
+**Why:** Supports **token efficiency** — reduces failed create attempts where the LLM guesses the wrong type code.
+
+---
+
+### FEAT-18: Function Group Bulk Fetch
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟠 P1 |
+| **Effort** | S (1–2 days) |
+| **Risk** | Low |
+| **Usefulness** | High — significant token/round-trip savings |
+| **Status** | Not started |
+| **Source** | Dassian pattern |
+
+**What:** Fetch ALL includes and function modules of a function group in one call, instead of N sequential requests. Returns combined source with clear delimiters.
+
+**Why:** Supports **token efficiency** — a function group with 20 FMs currently requires 20+ round trips. One bulk call reduces latency and simplifies the LLM's context.
+
+---
+
+### FEAT-19: Transport Contents (E071 List)
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | XS (< 1 day) |
+| **Risk** | Low |
+| **Usefulness** | Medium — show objects inside a transport request |
+| **Status** | Not started |
+| **Source** | Dassian pattern, abap-adt-api |
+
+**What:** List the objects (E071 entries) contained in a transport request. Both dassian and abap-adt-api support this. Useful for reviewing what an LLM has changed before release.
+
+---
+
+### FEAT-20: Source Version / Revision History
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | S (1–2 days) |
+| **Risk** | Low |
+| **Usefulness** | Medium — version comparison, rollback context |
+| **Status** | Not started |
+| **Source** | [abap-adt-api eval](../compare/abap-adt-api/evaluations/d3c6940-source-versions.md) |
+
+**What:** Load specific versions of ABAP source, compare active vs inactive, view revision history. The `abap-adt-api` library (v6.0.0) added `loadSourceVersion` and `sourceVersions`. Enables "show me what changed" and rollback workflows.
+
+---
+
+### FEAT-21: ABAP Documentation (F1 Help)
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | XS (< 1 day) |
+| **Risk** | Low |
+| **Usefulness** | Medium — LLM fetches real docs instead of hallucinating |
+| **Status** | Not started |
+| **Source** | [abap-adt-api eval](../compare/abap-adt-api/evaluations/7d5c653-abap-documentation.md), VSP |
+
+**What:** Fetch official ABAP keyword documentation (F1 help) via ADT API. The `abap-adt-api` library (v7.1.0) added `abapDocumentation`. Lets the LLM look up correct syntax instead of guessing.
+
+---
+
+### FEAT-22: gCTS/abapGit Integration
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | M (3–5 days) |
+| **Risk** | Low |
+| **Usefulness** | Medium — Git-based ABAP workflows |
+| **Status** | Not started |
+| **Source** | Dassian, VSP, abap-adt-api |
+
+**What:** List Git repositories, pull changes, check repo status. Multiple competitors have this (VSP, dassian, abap-adt-api). Enables Git-based ABAP development workflows.
+
+---
+
+### FEAT-23: GetProgFullCode (Include Traversal)
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | S (1–2 days) |
+| **Risk** | Low |
+| **Usefulness** | Medium — reduces round trips for programs with includes |
+| **Status** | Not started |
+| **Source** | fr0ster |
+
+**What:** Fetch a program with all its includes resolved into a single response. fr0ster has `GetProgFullCode`. Reduces N+1 round trips when reading programs with many includes.
+
+---
+
+### FEAT-24: CompareSource (Diff)
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | S (1–2 days) |
+| **Risk** | Low |
+| **Usefulness** | Medium — diff two versions of source |
+| **Status** | Not started |
+| **Source** | VSP |
+
+**What:** Diff two versions of ABAP source (active vs inactive, or across transports). VSP has `CompareSource`. Useful for code review workflows.
+
+---
+
+### FEAT-25: CDS Unit Tests
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | S (1–2 days) |
+| **Risk** | Low |
+| **Usefulness** | Medium — CDS test-driven development |
+| **Status** | Not started |
+| **Source** | fr0ster |
+
+**What:** Create, run, and check CDS unit tests. fr0ster is the only project with this capability. Enables AI-assisted CDS development with test coverage.
+
+---
+
+### FEAT-26: MCP Client Config Snippets
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | S (1–2 days) |
+| **Risk** | Low |
+| **Usefulness** | Medium — great onboarding UX |
+| **Status** | Not started |
+| **Source** | [fr0ster eval](../compare/fr0ster/evaluations/5f975fe-mcp-client-configurator.md) |
+
+**What:** `arc-1 config --client claude` prints ready-to-paste MCP client configuration. fr0ster supports 11 clients. Lowers the barrier to first connection.
+
+---
+
+### FEAT-27: Migration Analysis (ECC→S/4)
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | S (1–2 days) |
+| **Risk** | Low |
+| **Usefulness** | Medium — custom code migration check |
+| **Status** | Not started |
+| **Source** | AWS ABAP Accelerator |
+
+**What:** Run custom code migration checks to identify ECC code that needs changes for S/4HANA. AWS ABAP Accelerator has this as a key feature. Complements FEAT-06 (Cloud Readiness Assessment).
+
+---
+
+### FEAT-28: SAP Compatibility Hardening
+| Field | Value |
+|-------|-------|
+| **Priority** | 🟡 P2 |
+| **Effort** | S (1–2 days total) |
+| **Risk** | Low |
+| **Usefulness** | Medium — prevents edge-case failures across SAP versions |
+| **Status** | Not started |
+| **Source** | Multiple competitor trackers |
+
+**What:** A bundle of small compatibility fixes identified across all competitor trackers:
+1. **ATC ciCheckFlavour workaround** — older SAP systems don't support the `ciCheckFlavour` parameter (dassian pattern)
+2. **Stateful session header** — some ADT endpoints require `X-sap-adt-sessiontype: stateful` ([abap-adt-api eval](../compare/abap-adt-api/evaluations/issue-30-stateful-mode.md))
+3. **Include lock parent resolution** — includes inherit parent's lock; verify FUGR/PROG includes lock correctly ([abap-adt-api eval](../compare/abap-adt-api/evaluations/issue-36-include-lock.md))
+4. **Ignore syntax warnings on save** — syntax warnings should not block saves ([VSP eval](../compare/vibing-steampunk/evaluations/7fbfbba-ignore-warnings.md))
+5. **Transport endpoint S/4 compat** — transport creation endpoint differs on S/4HANA 757+ ([VSP eval](../compare/vibing-steampunk/evaluations/ca02f47-transport-endpoint-compat.md))
+
+---
+
+### FEAT-29: P3 Backlog (Future / Niche)
+
+The following features are tracked but not planned for near-term implementation. They are niche, complex, or not aligned with core principles.
+
+| ID | Feature | Why deferred | Source | Effort |
+|----|---------|-------------|--------|--------|
+| 29a | SSE transport | Most MCP clients use stdio or HTTP Streamable | fr0ster | M |
+| 29b | ABAP debugger (8+ tools) | Requires WebSocket + ZADT_VSP deployment | VSP | L |
+| 29c | Execute ABAP (IF_OO_ADT_CLASSRUN) | Security risk — needs careful safety gating | VSP, dassian | S |
+| 29d | Call graph analysis (5 tools) | Useful but niche, complex | VSP | M |
+| 29e | UI5/Fiori BSP CRUD (7 tools) | Only relevant if UI5 detected | VSP | M |
+| 29f | RFC connectivity (sap-rfc-lite) | Alternative to ADT HTTP, niche | fr0ster | M |
+| 29g | Embeddable server mode | Library mode for CAP/Express embedding | fr0ster | S |
+| 29h | Lock registry with recovery | Persist lock state to disk for crash recovery | fr0ster | M |
+| 29i | Language attributes on creation | Multi-language object creation | [abap-adt-api eval](../compare/abap-adt-api/evaluations/ffa43d7-language-attributes.md) | XS |
+| 29j | Lua scripting / WASM compiler | VSP-unique experimental, not core MCP value | VSP | N/A |
+
+---
+
+## 🏗️ Infrastructure & Operations
+
+### OPS-01: Structured JSON Logging
+| Field | Value |
+|-------|-------|
+| **Priority** | — |
+| **Effort** | — |
+| **Risk** | — |
+| **Usefulness** | — |
+| **Status** | ✅ Complete — `src/server/logger.ts` + `src/server/audit.ts` with multi-sink output |
+
+**Implemented:** Structured logger with text/JSON output, sensitive field redaction. Multi-sink audit system (stderr, file, BTP Audit Log Service). User identity from OIDC JWT in all log entries.
 
 ---
 
@@ -483,48 +847,84 @@ SAP_RATE_LIMIT_BURST=10  # burst allowance
 
 ## Prioritized Execution Order
 
-### Phase A: Enterprise Security (Next)
-1. **SEC-01** Principal Propagation — SAP-side setup (STRUST, CERTRULE, ICM) + end-to-end testing
-2. **DOC-02** Basis Admin Security Guide (P1, S)
+> Priorities are assigned based on which [core design principle](#core-design-principles) a feature serves. Sourced from 3 competitor trackers ([fr0ster](../compare/fr0ster/overview.md), [VSP](../compare/vibing-steampunk/overview.md), [abap-adt-api](../compare/abap-adt-api/overview.md)) and the [cross-project feature matrix](../compare/00-feature-matrix.md).
 
-### Phase B: Feature Completeness
-3. **FEAT-01** Where-Used Analysis (P1, XS)
-4. **FEAT-02** API Release Status (P1, S)
-5. **DOC-01** End-to-End Copilot Studio Guide (P1, S)
+### Phase A: Production Blockers (P0)
+1. **FEAT-08** Content-Type 415/406 Auto-Retry (XS) — both fr0ster and VSP hit this
+2. **FEAT-14** 401 Session Timeout Auto-Retry (XS) — centralized gateway idles between requests
+3. **FEAT-07** TLS/HTTPS for HTTP Streamable (S) — enterprise deployments without reverse proxy
+4. **FEAT-15** Namespace URL Encoding Audit (XS) — silent failures for namespaced objects
 
-### Phase C: Enterprise Hardening
-6. **SEC-05** Rate Limiting (P2, S)
-7. **SEC-03** S_DEVELOP Authorization Awareness (P2, S)
+### Phase B: Core Value Features (P1)
+5. **FEAT-01** Where-Used Analysis (XS) — most requested, daily ABAP developer need
+6. **FEAT-17** Type Auto-Mappings for SAPWrite (XS) — eliminate LLM type code confusion
+7. **FEAT-02** API Release Status / Clean Core (S) — must-have for S/4HANA Cloud
+8. **FEAT-12** Fix Proposals / Auto-Fix (S) — safer than LLM-guessed fixes
+9. **FEAT-16** Error Intelligence (S) — actionable hints for SAP errors (subsumes SEC-03)
+10. **FEAT-13** DDIC Domain/Data Element Write (S) — complete data modeling workflow
+11. **FEAT-18** Function Group Bulk Fetch (S) — token/round-trip savings
+12. **DOC-01** Copilot Studio Setup Guide (S) — critical for enterprise adoption
+13. **DOC-02** Basis Admin Security Guide (S) — admin audience needs clear guidance
 
-### Phase D: Advanced Features
-12. **FEAT-06** Cloud Readiness Assessment (P2, M)
-13. **FEAT-03** Enhancement Framework (P2, M)
-14. **FEAT-04** DDIC Object Support (P2, M)
-15. **OPS-03** Multi-System Routing (P3, L)
-16. **FEAT-05** Code Refactoring (P3, L)
+### Phase C: ADT Feature Parity (P2) — Quick Wins
+14. **FEAT-10** PrettyPrint (XS) — code formatting, VSP and abap-adt-api have it
+15. **FEAT-11** Inactive Objects List (XS) — development workflow
+16. **FEAT-19** Transport Contents (XS) — review objects before release
+17. **FEAT-21** ABAP Documentation / F1 Help (XS) — real docs instead of hallucination
+18. **FEAT-28** SAP Compatibility Hardening (S) — 5 compat fixes bundled
+19. **OPS-02** Health Check Enhancements (XS) — `/health/deep` with SAP connectivity check
+
+### Phase D: ADT Feature Parity (P2) — Larger Items
+20. **FEAT-09** SQL Trace Monitoring (S) — completes diagnostics story
+21. **SEC-05** Rate Limiting (S) — prevent runaway AI loops
+22. **FEAT-20** Source Version / Revision History (S) — version comparison, rollback
+23. **FEAT-24** CompareSource / Diff (S) — code review workflows
+24. **FEAT-26** MCP Client Config Snippets (S) — onboarding UX
+25. **FEAT-25** CDS Unit Tests (S) — CDS test-driven development
+26. **FEAT-23** GetProgFullCode / Include Traversal (S) — reduce round trips
+27. **FEAT-27** Migration Analysis ECC→S/4 (S) — custom code migration
+28. **FEAT-06** Cloud Readiness Assessment (M) — ATC cloud checks + abaplint
+29. **FEAT-03** Enhancement Framework / BAdI (M) — customization scenarios
+30. **FEAT-22** gCTS/abapGit Integration (M) — Git-based ABAP workflows
+31. **OPS-03** Multi-System Routing (L) — one instance → multiple SAP systems
+32. **DOC-03** SAP Community Blog Post (S) — visibility and adoption
+
+### Phase E: Future / Niche (P3)
+33. **FEAT-05** Code Refactoring (L) — rename, extract method, change package
+34. **FEAT-29** P3 Backlog — see [FEAT-29 table](#feat-29-p3-backlog-future--niche) for SSE, debugger, execute ABAP, call graph, UI5/BSP, RFC, embeddable server, lock registry, language attributes
 
 ---
 
 ## Competitive Landscape
 
+> **Detailed tracking**: See [`compare/`](../compare/) for per-commit and per-issue evaluations of key competitors.
+
 | Competitor | Language | Tools | Auth | Safety | Deployment | Key Advantage |
 |-----------|---------|-------|------|--------|------------|---------------|
-| **ARC-1** | TypeScript | 11 intent-based | API Key, OIDC, XSUAA, PP | Read-only, pkg filter, op filter, scope enforcement | Docker, BTP CF, npm | Per-user PP, scope-based tools, 3 auth modes, safety, 386 tests |
+| **ARC-1** | TypeScript | 11 intent-based + hyperfocused | API Key, OIDC, XSUAA, PP | Read-only, pkg filter, op filter, scope enforcement | Docker, BTP CF, npm | Per-user PP, scope-based tools, 3 auth modes, safety, 707+ tests |
+| **vibing-steampunk** | Go 1.24 | 1-99 (3 modes) | Basic, Cookie | Op filter, pkg filter, transport guard | Go binary (9 platforms) | 242 stars, native ABAP parser, WASM compiler, Lua scripting |
+| **fr0ster/mcp-abap-adt** | TypeScript | 287 (4 tiers) | 9 providers (incl. TLS, SAML, Device Flow) | Exposition tiers | npm `@mcp-abap-adt/core` | Most tools, most auth options, embeddable, RFC, multi-system |
 | SAP ABAP Add-on MCP | ABAP | ~10 | SAP native | SAP authorization | Runs inside SAP | No proxy needed, SAP-native auth |
-| lemaiwo/btp-sap-odata-to-mcp-server | TypeScript | ~10 | XSUAA OAuth proxy | XSUAA roles | BTP CF (MTA) | XSUAA OAuth proxy, SAP Cloud SDK, principal propagation via Destination Service |
-| mario-andreschak/mcp-abap-adt | TypeScript | ~20 | Basic | None | Node.js | Uses established abap-adt-api library |
-| AWS ABAP Accelerator | Python | ~15 | OAuth | Basic | AWS Lambda | Cloud readiness assessment, migration |
-| SAP Joule for Developers | SAP-internal | N/A | SAP | SAP | BAS/ADT | SAP's own AI, trained on ABAP LLM |
-| GitHub Copilot for ABAP | N/A | N/A | GitHub | N/A | Eclipse plugin | Inline completions, chat |
+| lemaiwo/btp-sap-odata-to-mcp-server | TypeScript | ~10 | XSUAA OAuth proxy | XSUAA roles | BTP CF (MTA) | XSUAA OAuth proxy, principal propagation |
+| dassian-adt / abap-mcpb | JavaScript | 25 | Basic, Browser login | MCP elicitation | Node.js / MCPB | Error intelligence, type auto-mappings, 7 elicitation flows |
+| AWS ABAP Accelerator | Python | ~15 | OAuth, X.509 | Basic | AWS Lambda | Cloud readiness assessment, migration |
 
-**ARC-1 differentiators:**
-1. **Principal propagation** — per-user SAP authentication via BTP Destination Service + Cloud Connector
-2. **Scope-based tool filtering** — users only see tools they have permission for (read/write/admin via XSUAA roles)
-3. **Three auth modes coexist** — XSUAA OAuth + Entra ID OIDC + API key on the same endpoint
-4. Comprehensive safety system (read-only, package filter, operation filter, transport guard) — additive to scopes
-5. Audit logging with user identity (userName, email, clientId) in every tool call
-6. `@abaplint/core` integration for offline ABAP linting (no SAP round-trip needed)
-7. 386 automated tests (358 unit + 28 integration) with CI on Node 20/22
+**ARC-1 differentiators (no other project has all of these):**
+1. **Intent-based routing** — 11 tools vs 25-287, simplest LLM decision surface
+2. **Principal propagation** — per-user SAP authentication via BTP Destination Service + Cloud Connector
+3. **Scope-based tool filtering** — users only see tools they have permission for (read/write/admin via XSUAA roles)
+4. **Three auth modes coexist** — XSUAA OAuth + Entra ID OIDC + API key on the same endpoint
+5. **Comprehensive safety system** — read-only, package filter, operation filter, transport guard, dry-run — additive to scopes
+6. **Multi-sink audit logging** — stderr + file + BTP Audit Log Service
+7. **Context compression + method-level surgery** — AST-based 7-30x + 95% method-level reduction
+8. **MCP elicitation** — interactive confirmations for destructive operations
+9. **707+ automated tests** with CI on Node 20/22, BTP integration tests
+10. **npm + Docker + release-please** — most professional distribution pipeline
+
+**Key competitive threats** (tracked in [`compare/`](../compare/)):
+1. **vibing-steampunk** (242 stars) — community favorite, daily commits, expanding into compilers/scripting. Lacks enterprise auth but developer-loved.
+2. **fr0ster** (v4.8.1, 85+ releases in 5 months) — fastest-moving competitor. 9 auth providers, TLS, RFC, embeddable. Watch for convergence on enterprise features.
+3. **btp-odata-mcp** (119 stars) — different category (OData) but high adoption. Could expand into ADT territory.
 
 ---
 
@@ -584,14 +984,22 @@ SAP_RATE_LIMIT_BURST=10  # burst allowance
 | Auth Phase 1: API Key | `ARC1_API_KEY` Bearer token | ✅ Complete |
 | Auth Phase 2: OAuth/OIDC | Entra ID JWT validation via `jose` library | ✅ Complete |
 | Auth Phase 4: BTP CF | Docker on CF with Destination Service + Cloud Connector | ✅ Complete |
-| TypeScript Migration | Full Go → TypeScript port, 348 tests, Go code removed | ✅ Complete (2026-03-26) |
+| TypeScript Migration | Full Go → TypeScript port, Go code removed | ✅ Complete (2026-03-26) |
 | CI/CD Pipeline | GitHub Actions: lint, typecheck, tests (Node 20/22), Docker, npm publish | ✅ Complete |
 | Copilot Studio E2E | OAuth + MCP + BTP Destination + Cloud Connector → SAP data | ✅ Complete |
 | XSUAA OAuth Proxy | SEC-07: MCP SDK auth + @sap/xssec, Express 5, 3 auth modes coexist | ✅ Complete (2026-03-27) |
 | Scope Enforcement | SEC-06: Per-tool scope checks, ListTools filtering, 12 tests | ✅ Complete (2026-03-27) |
-| Audit Logging | SEC-04: User identity in tool call logs (userName, email, clientId) | ✅ Mostly complete (2026-03-27) |
+| Audit Logging | SEC-04: Multi-sink audit (stderr, file, BTP Audit Log Service) | ✅ Complete (2026-04-01) |
 | Dynamic Client Registration | RFC 7591 /register endpoint for MCP clients | ✅ Complete (2026-03-27) |
 | Principal Propagation | SEC-01+SEC-02: Per-user ADT client via BTP Dest Service + Cloud Connector | ✅ Code complete (2026-03-27) |
+| Hyperfocused Mode | Single `SAP` tool (~200 tokens) — competitive parity with VSP | ✅ Complete (2026-04-01) |
+| Method-Level Surgery | `edit_method`, `list_methods`, `get_method` — 95% token reduction | ✅ Complete (2026-04-01) |
+| Runtime Diagnostics | SAPDiagnose — short dumps (ST22), ABAP profiler traces | ✅ Complete (2026-04-01) |
+| DDIC Completeness | FEAT-04: DOMA, DTEL, STRU, DDLX, TRAN, BOR, T100, variants | ✅ Complete (2026-04-01) |
+| RAP CRUD | DDLS/DDLX/BDEF/SRVD write, SRVB read, batch activation | ✅ Complete (2026-04-01) |
+| Context Compression | SAPContext with AST-based dependency extraction (7-30x reduction) | ✅ Complete (2026-04-01) |
+| MCP Elicitation | Interactive confirmations for destructive operations | ✅ Complete (2026-04-01) |
+| BTP ABAP Environment | OAuth 2.0 browser login, direct BTP connectivity | ✅ Complete (2026-04-01) |
 
 ---
 

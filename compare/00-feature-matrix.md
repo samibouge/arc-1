@@ -2,7 +2,7 @@
 
 A comprehensive comparison of all SAP ADT/MCP projects against ARC-1.
 
-_Last updated: 2026-04-02_
+_Last updated: 2026-04-04_
 
 ## Legend
 - ✅ = Supported
@@ -22,8 +22,8 @@ _Last updated: 2026-04-02_
 | npm package | ✅ `arc-1` | ❌ (binary) | ❌ | ❌ | ❌ | ✅ `@mcp-abap-adt/core` | ❌ | ❌ (MCPB) |
 | Docker image | ✅ ghcr.io | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
 | Stars | — | 242 | 109 | 103 | 29 | 26 | 119 | 0 (new) |
-| Active development | ✅ | ✅ Very (v2.32.0) | ❌ Dormant (Jan 2025) | ❌ Dormant | ⚠️ Stale (Jan 2025) | ✅ Very (v4.7.1) | ⚠️ Moderate | ✅ New (Mar 2026) |
-| Release count | — | 32+ | — | — | — | 83 (5 months) | — | 1 |
+| Active development | ✅ | ✅ Very (v2.32.0+) | ❌ Dormant (Jan 2025) | ❌ Dormant | ⚠️ Stale (Jan 2025) | ✅ Very (v4.8.1) | ⚠️ Moderate | ✅ New (Mar 2026) |
+| Release count | — | 32+ | — | — | — | 85+ (5 months) | — | 1 |
 | NPM monthly downloads | — | N/A | — | — | — | 3,625 | — | N/A |
 
 ## 2. MCP Transport
@@ -214,68 +214,9 @@ _Last updated: 2026-04-02_
 
 ---
 
-## Priority Action Items for ARC-1
+## Priority Action Items
 
-Based on verified codebase analysis (2026-04-01) and competitive landscape:
-
-### 🔴 Critical — Competitive Gaps (implement soon)
-
-| # | Feature | Why | Competition | Effort |
-|---|---------|-----|-------------|--------|
-| 1 | ~~**Short dump analysis (ST22)**~~ | ✅ Implemented — SAPDiagnose `dumps` action lists and reads short dumps with formatted text, error analysis, and call stack. | VSP, fr0ster, dassian | ~~1d~~ |
-| 2 | ~~**DDLX/Metadata Extension read**~~ | ✅ Implemented — DDLX type in SAPRead returns CDS metadata extension source. | fr0ster | ~~1d~~ |
-| 3 | **Content-Type 415 auto-retry** | Robustness fix learned from fr0ster issue #22/#23. SAP systems vary in Accept/Content-Type expectations. | fr0ster | 0.5d |
-| 4 | ~~**Batch activation with dependency resolution**~~ | ✅ Implemented — SAPActivate `objects` array for batch activation. Essential for RAP stacks. | AWS, fr0ster, VSP | ~~2d~~ |
-| 5 | **TLS/HTTPS for HTTP Streamable** | fr0ster added in v4.6.0. Required for production enterprise deployments without reverse proxy. | fr0ster | 1d |
-
-### 🟠 High Priority — Significant Value
-
-| # | Feature | Why | Competition | Effort |
-|---|---------|-----|-------------|--------|
-| 6 | ~~**Structures (STRU) read support**~~ | ✅ Implemented — STRU type in SAPRead returns CDS-like source definition. | VSP, fr0ster, mario | ~~1d~~ |
-| 7 | ~~**Transaction code read**~~ | ✅ Implemented — TRAN type in SAPRead returns description, program, package. | VSP, fr0ster | ~~0.5d~~ |
-| 8 | ~~**Service binding (SRVB) read/CRUD**~~ | ✅ Implemented — SRVB type in SAPRead returns structured binding info (OData version, publish status, service definition ref). | AWS, fr0ster, VSP | ~~1d~~ |
-| 9 | ~~**EditSource (surgical string replacement)**~~ | ✅ Implemented — `edit_method` action in SAPWrite for method-level surgery (95% source reduction). | VSP | ~~2d~~ |
-| 10 | **Function group bulk fetch** | Dassian fetches ALL includes + FMs in one call. Reduces LLM round trips significantly. | dassian | 1d |
-| 11 | **Error intelligence with self-correction hints** | Dassian provides actionable SAP error hints (SM12 for locks, SPAU for upgrades). ARC-1 has basic LLM hints but not comprehensive. | dassian | 1d |
-| 12 | **GetProgFullCode (recursive include discovery)** | fr0ster-unique feature. Fetches program with all includes resolved. Reduces round trips for complex programs. | fr0ster | 1d |
-| 13 | **Type auto-mappings for SAPWrite** | CLAS→CLAS/OC, INTF→INTF/OI, etc. Dassian maps 16 types. Improves create UX. | dassian | 0.5d |
-
-### 🟡 Medium Priority — Nice to Have
-
-| # | Feature | Why | Competition | Effort |
-|---|---------|-----|-------------|--------|
-| 14 | **PrettyPrint** | Code formatting via ADT. VSP and mcp-abap-abap-adt-api have it. | VSP | 1d |
-| 15 | **gCTS/abapGit integration** | Git repos list + pull. Dassian and VSP have it. | dassian, VSP | 2d |
-| 16 | ~~**ABAP profiler traces**~~ | ✅ Implemented — SAPDiagnose `traces` action lists and analyzes profiler traces (hitlist, statements, dbAccesses). | VSP, fr0ster | ~~2d~~ |
-| 17 | **SQL trace support** | Performance diagnostics. VSP has it. | VSP | 1d |
-| 18 | **CDS unit tests** | fr0ster-unique. Create/run/check CDS unit tests. | fr0ster | 1d |
-| 19 | **Inactive objects list** | Show what's inactive system-wide. VSP and fr0ster have it. | VSP, fr0ster | 0.5d |
-| 20 | **Transport contents (E071 list)** | Show objects inside a transport. mcp-abap-abap-adt-api and dassian have it. | dassian | 0.5d |
-| 21 | **MCP client auto-configurator** | fr0ster's `mcp-conf` CLI for 11 MCP clients. Great onboarding UX. | fr0ster | 2d |
-| 22 | **Multi-system support** | Connect to multiple SAP systems. AWS, fr0ster, btp-odata-mcp have it. | AWS, fr0ster | 3d |
-| 23 | **ATC ciCheckFlavour workaround** | Older system compatibility for ATC. Dassian found the fix. | dassian | 0.5d |
-| 24 | **Migration analysis tool** | Custom code migration check (ECC→S/4). AWS-unique. | AWS | 1d |
-| 25 | **CompareSource** | Diff two versions. VSP has it. | VSP | 1d |
-| 26 | ~~**Domain/Data element read**~~ | ✅ Implemented — DOMA and DTEL types in SAPRead return structured metadata (type info, labels, value tables, search help). | fr0ster | ~~1d~~ |
-
-### 🟢 Low Priority — Niche / Future
-
-| # | Feature | Why | Competition | Effort |
-|---|---------|-----|-------------|--------|
-| 27 | SSE transport | fr0ster has it. Most MCP clients use stdio or HTTP. | fr0ster | 2d |
-| 28 | ABAP debugger | VSP has 8 tools. Requires complex WebSocket + ZADT_VSP deployment. | VSP | 5d |
-| 29 | Execute ABAP (IF_OO_ADT_CLASSRUN) | VSP and dassian have it. Security risk — needs careful safety gating. | VSP, dassian | 2d |
-| 30 | Lua scripting / WASM compiler | VSP-unique experimental features. Not core MCP value. | VSP | N/A |
-| 31 | Call graph analysis | VSP has 5 tools. Useful but niche. | VSP | 3d |
-| 32 | UI5/Fiori BSP CRUD | VSP has 7 tools. Only relevant if UI5 detected. | VSP | 3d |
-| 33 | RFC connectivity | fr0ster uses sap-rfc-lite. Alternative to ADT HTTP. | fr0ster | 3d |
-| 34 | Embeddable server mode | fr0ster's EmbeddableMcpServer for CAP/Express integration. | fr0ster | 1d |
-| 35 | MCPB packaging | Dassian's zero-build Claude Desktop format. | dassian | 1d |
-| 36 | Lock registry with recovery | fr0ster persists lock state to disk for crash recovery. | fr0ster | 2d |
-| 37 | RAG-optimized tool descriptions | fr0ster rewrote descriptions for embedding/vector search. | fr0ster | 1d |
-| 38 | GetAbapHelp (F1 documentation) | VSP can retrieve ABAP keyword help. | VSP | 0.5d |
-| 39 | Enhancement discovery | fr0ster can find enhancement spots/implementations. | fr0ster | 2d |
+> All prioritized items with evaluation details are maintained in the [roadmap](../docs/roadmap.md#prioritized-execution-order). The feature matrix tables above are the source of truth for _what exists_; the roadmap is the source of truth for _what to build next and why_.
 
 ---
 
@@ -293,7 +234,7 @@ The following items were incorrectly marked in the previous version and have sin
 | ARC-1 Batch activation | — | ⚠️ | ✅ | Implemented in PR #22 |
 | ARC-1 RAP CRUD | — | ❌ | ✅ | DDLS/DDLX/BDEF/SRVD write in PR #22 |
 | VSP tool count | 1-122 | 1-99 (54 focused, 99 expert per README_TOOLS.md) | Updated from actual tool documentation |
-| fr0ster version | v4.5.2 | v4.7.1 | Updated to current release |
+| fr0ster version | v4.5.2 | v4.7.1 → v4.8.1 | Updated to current release (85+ releases) |
 | fr0ster TLS support | not listed | ✅ (v4.6.0) | New feature added Mar 31 |
 | fr0ster sap-rfc-lite | not listed | ✅ (v4.7.0) | Replaced archived node-rfc |
 | dassian column name | dassian-adt | dassian-adt / abap-mcpb | Successor repo albanleong/abap-mcpb created Mar 31 |
@@ -316,12 +257,32 @@ The following items were incorrectly marked in the previous version and have sin
 
 ### Biggest Competitive Threats
 1. **vibing-steampunk** (242 stars) — Community favorite. Hyperfocused mode, method-level surgery, native parser, WASM compiler. Lacks BTP/enterprise auth but developer-loved.
-2. **fr0ster** (v4.7.1, 83 releases) — Closest enterprise competitor. 287 tools, 9 auth providers, TLS, RFC, embeddable. Complex multi-repo but ambitious.
+2. **fr0ster** (v4.8.1, 85+ releases) — Closest enterprise competitor. 287 tools, 9 auth providers, TLS, RFC, embeddable. Complex multi-repo but ambitious.
 3. **btp-odata-mcp** (119 stars) — Different category (OData not ADT) but high adoption. Could expand into ADT territory.
 
 ### Key Gaps to Close
-- ~~**Diagnostics**: ARC-1 has zero runtime diagnostics.~~ **CLOSED** — Short dumps (ST22) and ABAP profiler traces implemented in SAPDiagnose.
-- ~~**RAP completeness**: Missing DDLX, SRVB, batch activation.~~ **CLOSED** — DDLX/SRVB read, DDLS/DDLX/BDEF/SRVD write, and batch activation all implemented.
-- ~~**DDIC completeness**: Missing structures, domains, data elements, transactions.~~ **CLOSED** — STRU, DOMA, DTEL, TRAN all implemented.
-- ~~**Token efficiency**: SAPContext is good but lacks method-level surgery and hyperfocused mode.~~ **CLOSED** — method-level surgery and hyperfocused mode implemented.
-- **Remaining gaps**: TLS/HTTPS, SQL traces, ABAP debugger, gCTS/abapGit, multi-system support, execute ABAP.
+
+**Closed gaps:**
+- ~~Diagnostics~~ → ST22 + profiler traces (SAPDiagnose)
+- ~~RAP completeness~~ → DDLX/SRVB read, DDLS/DDLX/BDEF/SRVD write, batch activation
+- ~~DDIC completeness~~ → STRU, DOMA, DTEL, TRAN read
+- ~~Token efficiency~~ → method-level surgery, hyperfocused mode, context compression
+
+**P0 — production blockers:**
+- 415/406 content-type auto-retry (SAP version compatibility)
+- 401 session timeout auto-retry (centralized gateway idle)
+- TLS/HTTPS for HTTP Streamable (enterprise deployment without reverse proxy)
+
+**P1 — high-value gaps:**
+- Where-Used analysis, API release status (clean core), fix proposals
+- DDIC write (DOMA/DTEL), namespace encoding audit, error intelligence
+- Type auto-mappings, function group bulk fetch
+- Documentation (Copilot Studio guide, Basis Admin guide)
+
+**P2+ — future gaps:**
+- SQL traces, PrettyPrint, inactive objects, transport contents, source versions
+- Cloud readiness assessment, gCTS/abapGit, enhancement framework
+- Multi-system routing, rate limiting
+
+**Not planned (intentional):**
+- ABAP debugger (WebSocket + ZADT_VSP), execute ABAP (security risk), Lua scripting (VSP-unique)
