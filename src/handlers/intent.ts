@@ -40,7 +40,13 @@ import type { CachingLayer } from '../cache/caching-layer.js';
 import { extractCdsElements } from '../context/cds-deps.js';
 import { compressCdsContext, compressContext } from '../context/compressor.js';
 import { extractMethod, formatMethodListing, listMethods, spliceMethod } from '../context/method-surgery.js';
-import { detectFilename, lintAbapSource } from '../lint/lint.js';
+import {
+  buildLintConfig,
+  type LintConfigOptions,
+  listRulesFromConfig,
+  type RuleOverrides,
+} from '../lint/config-builder.js';
+import { detectFilename, lintAbapSource, lintAndFix, validateBeforeWrite } from '../lint/lint.js';
 import { sanitizeArgs } from '../server/audit.js';
 import { generateRequestId, requestContext } from '../server/context.js';
 import { logger } from '../server/logger.js';
@@ -124,7 +130,7 @@ function classifyError(err: unknown): string {
  */
 export async function handleToolCall(
   client: AdtClient,
-  _config: ServerConfig,
+  config: ServerConfig,
   toolName: string,
   args: Record<string, unknown>,
   authInfo?: AuthInfo,
@@ -187,7 +193,7 @@ export async function handleToolCall(
           result = await handleSAPQuery(client, args);
           break;
         case 'SAPWrite':
-          result = await handleSAPWrite(client, args, cachingLayer);
+          result = await handleSAPWrite(client, args, config, cachingLayer);
           break;
         case 'SAPActivate':
           result = await handleSAPActivate(client, args);
@@ -196,7 +202,7 @@ export async function handleToolCall(
           result = await handleSAPNavigate(client, args);
           break;
         case 'SAPLint':
-          result = await handleSAPLint(client, args);
+          result = await handleSAPLint(client, args, config);
           break;
         case 'SAPDiagnose':
           result = await handleSAPDiagnose(client, args);
@@ -208,7 +214,7 @@ export async function handleToolCall(
           result = await handleSAPContext(client, args, cachingLayer);
           break;
         case 'SAPManage':
-          result = await handleSAPManage(client, _config, args, cachingLayer);
+          result = await handleSAPManage(client, config, args, cachingLayer);
           break;
         case 'SAP': {
           // Hyperfocused mode: route to the appropriate handler
@@ -230,7 +236,7 @@ export async function handleToolCall(
           // Delegate to the real handler (recursive call, but with the mapped tool name)
           result = await handleToolCall(
             client,
-            _config,
+            config,
             expanded.toolName,
             expanded.expandedArgs,
             authInfo,
@@ -572,22 +578,80 @@ async function handleSAPQuery(client: AdtClient, args: Record<string, unknown>):
   }
 }
 
-async function handleSAPLint(_client: AdtClient, args: Record<string, unknown>): Promise<ToolResult> {
+// _client unused: SAPLint runs offline via @abaplint/core (no SAP round-trip).
+// Signature matches other handlers for consistency with handleToolCall dispatch.
+async function handleSAPLint(
+  _client: AdtClient,
+  args: Record<string, unknown>,
+  config: ServerConfig,
+): Promise<ToolResult> {
   const action = String(args.action ?? '');
+  const ruleOverrides = args.rules as RuleOverrides | undefined;
+  const configOptions = buildLintConfigOptions(config, ruleOverrides);
 
   switch (action) {
     case 'lint': {
       const source = String(args.source ?? '');
+      if (!source) return errorResult('"source" is required for lint action.');
       const name = String(args.name ?? 'UNKNOWN');
       const filename = detectFilename(source, name);
-      const issues = lintAbapSource(source, filename);
+      const lintConfig = buildLintConfig(configOptions);
+      const issues = lintAbapSource(source, filename, lintConfig);
       return textResult(JSON.stringify(issues, null, 2));
+    }
+    case 'lint_and_fix': {
+      const source = String(args.source ?? '');
+      if (!source) return errorResult('"source" is required for lint_and_fix action.');
+      const name = String(args.name ?? 'UNKNOWN');
+      const filename = detectFilename(source, name);
+      const lintConfig = buildLintConfig(configOptions);
+      const result = lintAndFix(source, filename, lintConfig);
+      return textResult(JSON.stringify(result, null, 2));
+    }
+    case 'list_rules': {
+      const lintConfig = buildLintConfig(configOptions);
+      const rules = listRulesFromConfig(lintConfig);
+      const enabled = rules.filter((r) => r.enabled);
+      const disabled = rules.filter((r) => !r.enabled);
+      return textResult(
+        JSON.stringify(
+          {
+            preset: configOptions.systemType === 'btp' ? 'cloud' : 'onprem',
+            abapVersion: cachedFeatures?.abapRelease ?? 'unknown',
+            enabledRules: enabled.length,
+            disabledRules: disabled.length,
+            rules: enabled,
+            disabledRuleNames: disabled.map((r) => r.rule),
+          },
+          null,
+          2,
+        ),
+      );
     }
     default:
       return errorResult(
-        `Unknown SAPLint action: "${action}". Supported: lint. For atc/syntax/unittest, use SAPDiagnose instead.`,
+        `Unknown SAPLint action: "${action}". Supported: lint, lint_and_fix, list_rules. For atc/syntax/unittest, use SAPDiagnose instead.`,
       );
   }
+}
+
+/**
+ * Build LintConfigOptions from server config and cached features.
+ *
+ * Uses cachedFeatures (from SAPManage probe) when available, but falls back
+ * to config.systemType so that --system-type btp works even before the first
+ * probe. Without this fallback, cloud lint rules wouldn't apply until a probe
+ * populates cachedFeatures.
+ */
+function buildLintConfigOptions(config: ServerConfig, ruleOverrides?: RuleOverrides): LintConfigOptions {
+  // Probe-detected system type is most accurate; fall back to CLI config
+  const systemType = cachedFeatures?.systemType ?? (config.systemType !== 'auto' ? config.systemType : undefined);
+  return {
+    systemType,
+    abapRelease: cachedFeatures?.abapRelease,
+    configFile: config.abaplintConfig,
+    ruleOverrides,
+  };
 }
 
 // ─── Object URL Mapping ──────────────────────────────────────────────
@@ -643,6 +707,7 @@ function sourceUrlForType(type: string, name: string): string {
 async function handleSAPWrite(
   client: AdtClient,
   args: Record<string, unknown>,
+  config: ServerConfig,
   cachingLayer?: CachingLayer,
 ): Promise<ToolResult> {
   const action = String(args.action ?? '');
@@ -656,9 +721,14 @@ async function handleSAPWrite(
 
   switch (action) {
     case 'update': {
+      // Pre-write lint validation
+      const lintWarnings = runPreWriteLint(source, type, name, config);
+      if (lintWarnings.blocked) return lintWarnings.result!;
+
       await safeUpdateSource(client.http, client.safety, objectUrl, srcUrl, source, transport);
       cachingLayer?.invalidate(type, name);
-      return textResult(`Successfully updated ${type} ${name}.`);
+      const msg = `Successfully updated ${type} ${name}.`;
+      return lintWarnings.warnings ? textResult(`${msg}\n\n${lintWarnings.warnings}`) : textResult(msg);
     }
     case 'create': {
       const pkg = String(args.package ?? '$TMP');
@@ -692,10 +762,15 @@ async function handleSAPWrite(
         return errorResult(spliced.error ?? `Failed to splice method "${method}" in ${name}.`);
       }
 
+      // Pre-write lint validation on the full spliced source
+      const lintWarnings = runPreWriteLint(spliced.newSource, type, name, config);
+      if (lintWarnings.blocked) return lintWarnings.result!;
+
       // Write the full source back (existing lock/modify/unlock flow)
       await safeUpdateSource(client.http, client.safety, objectUrl, srcUrl, spliced.newSource, transport);
       cachingLayer?.invalidate(type, name);
-      return textResult(`Successfully updated method "${method}" in ${type} ${name}.`);
+      const msg = `Successfully updated method "${method}" in ${type} ${name}.`;
+      return lintWarnings.warnings ? textResult(`${msg}\n\n${lintWarnings.warnings}`) : textResult(msg);
     }
     case 'delete': {
       // Lock, delete, unlock pattern
@@ -716,6 +791,71 @@ async function handleSAPWrite(
     }
     default:
       return errorResult(`Unknown SAPWrite action: ${action}. Supported: create, update, delete, edit_method`);
+  }
+}
+
+/** Pre-write lint check result */
+interface PreWriteLintResult {
+  /** Whether the write was blocked by lint errors */
+  blocked: boolean;
+  /** Error result to return if blocked */
+  result?: ToolResult;
+  /** Warning text to append to success message */
+  warnings?: string;
+}
+
+/**
+ * Run pre-write lint validation on source code.
+ *
+ * This is a "lint-before-lock" optimization (pattern from vibing-steampunk):
+ * by validating locally before acquiring the SAP object lock, we avoid
+ * holding locks on objects that would fail validation anyway.
+ *
+ * Only runs a strict subset of correctness rules (parser_error, cloud_types, etc.)
+ * — not style/formatting rules. This prevents false rejections from opinionated
+ * style checks while catching genuine errors that would fail server-side anyway.
+ *
+ * If lint itself throws (e.g., abaplint bug on unusual syntax), we don't block
+ * the write — we let the SAP server-side syntax check handle it instead.
+ */
+function runPreWriteLint(source: string, type: string, name: string, config: ServerConfig): PreWriteLintResult {
+  if (!config.lintBeforeWrite || !source) {
+    return { blocked: false };
+  }
+
+  try {
+    const filename = detectFilename(source, name);
+    const systemType = cachedFeatures?.systemType ?? (config.systemType !== 'auto' ? config.systemType : undefined);
+    const configOptions: LintConfigOptions = {
+      systemType,
+      abapRelease: cachedFeatures?.abapRelease,
+      configFile: config.abaplintConfig,
+    };
+    const result = validateBeforeWrite(source, filename, configOptions);
+
+    if (!result.pass) {
+      const errorLines = result.errors.map((e) => `  Line ${e.line}: [${e.rule}] ${e.message}`).join('\n');
+      return {
+        blocked: true,
+        result: errorResult(
+          `Pre-write lint check failed for ${type} ${name}. Fix these errors before writing:\n${errorLines}\n\n` +
+            'Use SAPLint action="lint_and_fix" to auto-fix, or disable with --lint-before-write=false.',
+        ),
+      };
+    }
+
+    if (result.warnings.length > 0) {
+      const warningLines = result.warnings.map((w) => `  Line ${w.line}: [${w.rule}] ${w.message}`).join('\n');
+      return {
+        blocked: false,
+        warnings: `Lint warnings:\n${warningLines}`,
+      };
+    }
+
+    return { blocked: false };
+  } catch {
+    // If lint itself fails, don't block the write
+    return { blocked: false };
   }
 }
 

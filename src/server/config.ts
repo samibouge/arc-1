@@ -111,6 +111,10 @@ export function parseArgs(args: string[]): ServerConfig {
   const toolMode = resolve('tool-mode', 'ARC1_TOOL_MODE', 'standard');
   config.toolMode = (toolMode === 'hyperfocused' ? 'hyperfocused' : 'standard') as ServerConfig['toolMode'];
 
+  // --- Lint ---
+  config.abaplintConfig = getFlag('abaplint-config') ?? process.env.SAP_ABAPLINT_CONFIG;
+  config.lintBeforeWrite = resolveBool('lint-before-write', 'SAP_LINT_BEFORE_WRITE', true);
+
   // --- Cache ---
   const cacheMode = resolve('cache', 'ARC1_CACHE', 'auto');
   config.cacheMode = (

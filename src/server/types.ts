@@ -79,6 +79,12 @@ export interface ServerConfig {
   /** Tool mode: 'standard' (11 intent tools) or 'hyperfocused' (1 universal SAP tool, ~200 tokens) */
   toolMode: 'standard' | 'hyperfocused';
 
+  // --- Lint ---
+  /** Path to custom abaplint.jsonc config file for lint rules */
+  abaplintConfig?: string;
+  /** Enable pre-write lint validation (default: true) */
+  lintBeforeWrite: boolean;
+
   // --- Cache ---
   /** Cache mode: 'auto' (memory for stdio, sqlite for http-streamable), 'memory', 'sqlite', 'none' */
   cacheMode: 'auto' | 'memory' | 'sqlite' | 'none';
@@ -122,6 +128,7 @@ export const DEFAULT_CONFIG: ServerConfig = {
   ppEnabled: false,
   ppStrict: false,
   toolMode: 'standard',
+  lintBeforeWrite: true,
   cacheMode: 'auto',
   cacheFile: '.arc1-cache.db',
   cacheWarmup: false,

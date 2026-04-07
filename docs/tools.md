@@ -296,20 +296,64 @@ SAPContext(action="usages", name="ZIF_ORDER")
 
 ## SAPLint
 
-Check ABAP code quality. Runs abaplint rules locally and/or ATC checks on the SAP system.
+Run local abaplint rules on ABAP source code. System-aware: auto-selects cloud or on-prem rules based on detected system type. For server-side checks (ATC, syntax check, unit tests), use SAPDiagnose instead.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `action` | string | Yes | `lint`, `atc`, or `syntax` |
-| `source` | string | No | ABAP source code (for `lint`) |
-| `name` | string | No | Object name (for `atc`/`syntax`) |
-| `type` | string | No | Object type (for `atc`/`syntax`) |
+| `action` | string | Yes | `lint`, `lint_and_fix`, or `list_rules` |
+| `source` | string | No | ABAP source code (for `lint` and `lint_and_fix`) |
+| `name` | string | No | Object name (used for filename detection) |
+| `rules` | object | No | Rule overrides: `{ "rule_name": false }` to disable, `{ "rule_name": { "severity": "Warning" } }` to configure |
+
+**Actions:**
+
+- **`lint`** — Check ABAP source for issues. Returns errors and warnings with line/column positions.
+- **`lint_and_fix`** — Lint + auto-fix all fixable issues (keyword case, obsolete statements, etc.). Returns the fixed source code alongside remaining unfixable issues.
+- **`list_rules`** — List all available rules with current config (preset, enabled/disabled status, severity). No source needed.
+
+**System-Aware Presets:**
+
+The lint rules auto-configure based on the detected SAP system:
+- **BTP/Cloud**: `cloud_types` (Error), `strict_sql` (Error), `obsolete_statement` (Error) — enforces ABAP Cloud constraints
+- **On-premise**: `cloud_types` (disabled), `obsolete_statement` (Warning) — more relaxed, allows classic ABAP
+
+**Pre-Write Validation:**
+
+When `--lint-before-write` is enabled (default: true), SAPWrite automatically runs a strict subset of lint rules before writing to SAP. Parser errors and cloud violations block the write. Style issues (keyword case, indentation) never block writes.
+
+**Custom Configuration:**
+
+Use `--abaplint-config /path/to/abaplint.jsonc` to load custom rules. The file uses the [abaplint config format](https://abaplint.org):
+
+```jsonc
+{
+  // Override specific rules
+  "rules": {
+    "line_length": { "severity": "Error", "length": 80 },
+    "abapdoc": true,           // re-enable a disabled rule
+    "obsolete_statement": false // disable a rule
+  },
+  // Optional: override syntax version
+  "syntax": { "version": "v757" }
+}
+```
+
+Rules from the config file are merged on top of the auto-detected preset (cloud/on-prem). Per-call overrides via the `rules` parameter take precedence over the config file.
+
+**Response shapes:**
+
+- **`lint`** returns: `[{ rule, message, line, column, endLine, endColumn, severity }]`
+- **`lint_and_fix`** returns: `{ fixedSource, appliedFixes, fixedRules, remainingIssues }` — use `fixedSource` as the corrected code
+- **`list_rules`** returns: `{ preset, abapVersion, enabledRules, disabledRules, rules }` — shows active config
 
 **Examples:**
 ```
 SAPLint(action="lint", source="DATA lv_test TYPE string.\nlv_test = 'hello'.")
+SAPLint(action="lint_and_fix", source="data lv_x type i.\nadd 1 to lv_x.", name="ZCL_TEST")
+SAPLint(action="list_rules")
+SAPLint(action="lint", source="...", rules={"line_length": {"severity": "Error", "length": 80}})
 ```
 
 ---
