@@ -37,7 +37,10 @@ jobs:
           cache: 'npm'
 
       - name: Install npm 11.5+ (required for OIDC trusted publishing)
-        run: npm install -g npm@latest
+        run: |
+          # Workaround for Node.js v22 bundled npm bug (https://github.com/npm/cli/issues/9151)
+          npm install --global npm@11.11.1
+          npm install --global npm@latest
 
       - name: Install dependencies
         run: npm ci
