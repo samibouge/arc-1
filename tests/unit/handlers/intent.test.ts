@@ -14,9 +14,8 @@ vi.mock('undici', async (importOriginal) => {
 });
 
 const { AdtClient } = await import('../../../src/adt/client.js');
-const { handleToolCall, hasRequiredScope, resetCachedFeatures, setCachedFeatures, TOOL_SCOPES } = await import(
-  '../../../src/handlers/intent.js'
-);
+const { handleToolCall, hasRequiredScope, resetCachedFeatures, setCachedFeatures, TOOL_SCOPES, buildCreateXml } =
+  await import('../../../src/handlers/intent.js');
 
 function createClient(): AdtClient {
   return new AdtClient({
@@ -1856,6 +1855,107 @@ ENDCLASS.`;
       });
       // Should succeed (mock returns data)
       expect(result.isError).toBeUndefined();
+    });
+  });
+
+  // ─── buildCreateXml ─────────────────────────────────────────────────
+
+  describe('buildCreateXml', () => {
+    it('returns correct XML for PROG', () => {
+      const xml = buildCreateXml('PROG', 'ZHELLO', 'ZPACKAGE', 'Hello Program');
+      expect(xml).toContain('<program:abapProgram');
+      expect(xml).toContain('xmlns:program="http://www.sap.com/adt/programs/programs"');
+      expect(xml).toContain('adtcore:type="PROG/P"');
+      expect(xml).toContain('adtcore:name="ZHELLO"');
+      expect(xml).toContain('adtcore:description="Hello Program"');
+      expect(xml).toContain('<adtcore:packageRef adtcore:name="ZPACKAGE"/>');
+    });
+
+    it('returns correct XML for CLAS', () => {
+      const xml = buildCreateXml('CLAS', 'ZCL_TEST', 'ZPACKAGE', 'Test Class');
+      expect(xml).toContain('<class:abapClass');
+      expect(xml).toContain('xmlns:class="http://www.sap.com/adt/oo/classes"');
+      expect(xml).toContain('adtcore:type="CLAS/OC"');
+      expect(xml).toContain('adtcore:name="ZCL_TEST"');
+      expect(xml).toContain('adtcore:description="Test Class"');
+      expect(xml).toContain('<adtcore:packageRef adtcore:name="ZPACKAGE"/>');
+    });
+
+    it('returns correct XML for INTF', () => {
+      const xml = buildCreateXml('INTF', 'ZIF_TEST', 'ZPACKAGE', 'Test Interface');
+      expect(xml).toContain('<intf:abapInterface');
+      expect(xml).toContain('xmlns:intf="http://www.sap.com/adt/oo/interfaces"');
+      expect(xml).toContain('adtcore:type="INTF/OI"');
+      expect(xml).toContain('adtcore:name="ZIF_TEST"');
+      expect(xml).toContain('adtcore:description="Test Interface"');
+      expect(xml).toContain('<adtcore:packageRef adtcore:name="ZPACKAGE"/>');
+    });
+
+    it('returns correct XML for INCL', () => {
+      const xml = buildCreateXml('INCL', 'ZHELLO_TOP', 'ZPACKAGE', 'Include Program');
+      expect(xml).toContain('<include:abapInclude');
+      expect(xml).toContain('xmlns:include="http://www.sap.com/adt/programs/includes"');
+      expect(xml).toContain('adtcore:type="PROG/I"');
+      expect(xml).toContain('adtcore:name="ZHELLO_TOP"');
+      expect(xml).toContain('adtcore:description="Include Program"');
+      expect(xml).toContain('<adtcore:packageRef adtcore:name="ZPACKAGE"/>');
+    });
+
+    it('returns correct XML for DDLS', () => {
+      const xml = buildCreateXml('DDLS', 'ZI_TRAVEL', 'ZPACKAGE', 'Travel CDS View');
+      expect(xml).toContain('<ddl:ddlSource');
+      expect(xml).toContain('xmlns:ddl="http://www.sap.com/adt/ddic/ddlsources"');
+      expect(xml).toContain('adtcore:type="DDLS/DF"');
+      expect(xml).toContain('adtcore:name="ZI_TRAVEL"');
+      expect(xml).toContain('adtcore:description="Travel CDS View"');
+      expect(xml).toContain('<adtcore:packageRef adtcore:name="ZPACKAGE"/>');
+    });
+
+    it('returns correct XML for BDEF', () => {
+      const xml = buildCreateXml('BDEF', 'ZI_TRAVEL', 'ZPACKAGE', 'Travel Behavior');
+      expect(xml).toContain('<bdef:behaviorDefinition');
+      expect(xml).toContain('xmlns:bdef="http://www.sap.com/adt/bo/behaviordefinitions"');
+      expect(xml).toContain('adtcore:type="BDEF/BDO"');
+      expect(xml).toContain('adtcore:name="ZI_TRAVEL"');
+      expect(xml).toContain('adtcore:description="Travel Behavior"');
+      expect(xml).toContain('<adtcore:packageRef adtcore:name="ZPACKAGE"/>');
+    });
+
+    it('returns correct XML for SRVD', () => {
+      const xml = buildCreateXml('SRVD', 'ZSD_TRAVEL', 'ZPACKAGE', 'Travel Service Def');
+      expect(xml).toContain('<srvd:srvdSource');
+      expect(xml).toContain('xmlns:srvd="http://www.sap.com/adt/ddic/srvd/sources"');
+      expect(xml).toContain('adtcore:type="SRVD/SRV"');
+      expect(xml).toContain('adtcore:name="ZSD_TRAVEL"');
+      expect(xml).toContain('adtcore:description="Travel Service Def"');
+      expect(xml).toContain('<adtcore:packageRef adtcore:name="ZPACKAGE"/>');
+    });
+
+    it('returns correct XML for DDLX', () => {
+      const xml = buildCreateXml('DDLX', 'ZC_TRAVEL', 'ZPACKAGE', 'Travel Metadata Ext');
+      expect(xml).toContain('<ddlx:ddlxSource');
+      expect(xml).toContain('xmlns:ddlx="http://www.sap.com/adt/ddic/ddlx/sources"');
+      expect(xml).toContain('adtcore:type="DDLX/EX"');
+      expect(xml).toContain('adtcore:name="ZC_TRAVEL"');
+      expect(xml).toContain('adtcore:description="Travel Metadata Ext"');
+      expect(xml).toContain('<adtcore:packageRef adtcore:name="ZPACKAGE"/>');
+    });
+
+    it('default fallback uses objectUrlForType instead of hardcoded path', () => {
+      const xml = buildCreateXml('TABL', 'ZTABLE', 'ZPACKAGE', 'A Table');
+      expect(xml).toContain('<adtcore:objectReferences');
+      expect(xml).toContain('/sap/bc/adt/ddic/tables/ZTABLE');
+      expect(xml).not.toContain('/sap/bc/adt/programs/programs/');
+    });
+
+    it('escapes XML special characters in attributes', () => {
+      const xml = buildCreateXml('DDLS', 'ZTEST', 'ZPKG', 'Desc with "quotes" & <angle>');
+      expect(xml).toContain('adtcore:description="Desc with &quot;quotes&quot; &amp; &lt;angle&gt;"');
+    });
+
+    it('escapes apostrophes in XML attributes', () => {
+      const xml = buildCreateXml('PROG', 'ZTEST', 'ZPKG', "It's a test");
+      expect(xml).toContain('adtcore:description="It&apos;s a test"');
     });
   });
 });
