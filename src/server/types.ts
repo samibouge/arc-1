@@ -62,6 +62,8 @@ export interface ServerConfig {
   apiKeys?: Array<{ key: string; profile: string }>;
   oidcIssuer?: string;
   oidcAudience?: string;
+  /** Clock tolerance in seconds for JWT exp/nbf validation (default: 0 — no tolerance) */
+  oidcClockTolerance?: number;
   xsuaaAuth: boolean;
 
   // --- BTP ABAP Environment (direct connection via service key) ---
