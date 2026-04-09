@@ -51,6 +51,19 @@ const parser = new XMLParser({
       'objectType',
       'proposal',
       'referencedObject',
+      'textSearchResult',
+      'testClass',
+      'testMethod',
+      'alert',
+      'finding',
+      'msg',
+      'request',
+      'hitListEntry',
+      'chapter',
+      'traceStatement',
+      'statement',
+      'dbAccess',
+      'access',
     ].includes(name);
   },
   parseAttributeValue: false, // Keep attributes as strings
@@ -145,7 +158,7 @@ export function parseTableContents(xml: string): { columns: string[]; rows: Reco
     // Old format: METADATA/@_name, DATASET/DATA
     // New format: metadata/@_name, dataSet/data
     const metadata = (col.METADATA ?? col.metadata) as Record<string, unknown> | undefined;
-    const name = String(metadata?.['@_name'] ?? metadata?.['@_dataPreview:name'] ?? '');
+    const name = String(metadata?.['@_name'] ?? '');
     if (!name) continue; // skip non-column entries like totalRows, name, etc.
     colNames.push(name);
 
@@ -273,11 +286,16 @@ export function parseSourceSearchResults(xml: string): SourceSearchResult[] {
   const refs = getNestedArray(parsed, 'objectReferences', 'objectReference');
   if (refs.length > 0) {
     for (const ref of refs) {
+      const matchNodes = findDeepNodes(ref, 'textSearchResult');
+      const matches = matchNodes.map((m: Record<string, unknown>) => ({
+        line: Number(m['@_line'] ?? 0),
+        snippet: String(m['@_snippet'] ?? m['#text'] ?? ''),
+      }));
       results.push({
         objectType: String(ref['@_type'] ?? ''),
         objectName: String(ref['@_name'] ?? ''),
         uri: String(ref['@_uri'] ?? ''),
-        matches: [],
+        matches,
       });
     }
     return results;

@@ -10,6 +10,7 @@
 import type { AdtHttpClient } from './http.js';
 import { checkOperation, OperationType, type SafetyConfig } from './safety.js';
 import type { SyntaxCheckResult, SyntaxMessage, UnitTestResult } from './types.js';
+import { findDeepNodes, parseXml } from './xml-parser.js';
 
 /** Run syntax check on an ABAP object */
 export async function syntaxCheck(
@@ -51,17 +52,7 @@ export async function activate(
     { Accept: 'application/xml' },
   );
 
-  // Check if activation succeeded (no error messages)
-  const hasErrors = resp.body.includes('severity="error"') || resp.body.includes('type="E"');
-  const messages: string[] = [];
-  // Extract message texts
-  const msgRegex = /shortText="([^"]+)"/g;
-  let match: RegExpExecArray | null;
-  while ((match = msgRegex.exec(resp.body)) !== null) {
-    messages.push(match[1]!);
-  }
-
-  return { success: !hasErrors, messages };
+  return parseActivationResult(resp.body);
 }
 
 /**
@@ -94,16 +85,7 @@ ${refs}
     { Accept: 'application/xml' },
   );
 
-  // Check if activation succeeded (no error messages)
-  const hasErrors = resp.body.includes('severity="error"') || resp.body.includes('type="E"');
-  const messages: string[] = [];
-  const msgRegex = /shortText="([^"]+)"/g;
-  let match: RegExpExecArray | null;
-  while ((match = msgRegex.exec(resp.body)) !== null) {
-    messages.push(match[1]!);
-  }
-
-  return { success: !hasErrors, messages };
+  return parseActivationResult(resp.body);
 }
 
 /** Result of a publish/unpublish operation */
@@ -113,11 +95,35 @@ export interface PublishResult {
   longText: string;
 }
 
+function findDeepValue(obj: unknown, key: string): unknown {
+  if (!obj || typeof obj !== 'object') return undefined;
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const found = findDeepValue(item, key);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  const record = obj as Record<string, unknown>;
+  if (key in record) return record[key];
+  for (const val of Object.values(record)) {
+    const found = findDeepValue(val, key);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
 function parsePublishResponse(xml: string): PublishResult {
-  const severity = xml.match(/<SEVERITY>([^<]*)<\/SEVERITY>/)?.[1] ?? 'UNKNOWN';
-  const shortText = xml.match(/<SHORT_TEXT>([^<]*)<\/SHORT_TEXT>/)?.[1] ?? '';
-  const longText = xml.match(/<LONG_TEXT>([^<]*)<\/LONG_TEXT>/)?.[1] ?? '';
-  return { severity, shortText, longText };
+  if (!xml.trim()) return { severity: 'OK', shortText: '', longText: '' };
+  const parsed = parseXml(xml);
+  const severity = findDeepValue(parsed, 'SEVERITY');
+  const shortText = findDeepValue(parsed, 'SHORT_TEXT');
+  const longText = findDeepValue(parsed, 'LONG_TEXT');
+  return {
+    severity: severity != null ? String(severity) : 'UNKNOWN',
+    shortText: shortText != null ? String(shortText) : '',
+    longText: longText != null ? String(longText) : '',
+  };
 }
 
 function publishBody(name: string): string {
@@ -227,8 +233,15 @@ export async function runAtcCheck(
     Accept: 'application/xml',
   });
 
-  // Parse worklist ID from response and fetch results
-  const worklistId = extractAttr(createResp.body, 'id') || '1';
+  // Parse worklist ID from response via proper XML parsing
+  const createParsed = parseXml(createResp.body);
+  const runs = findDeepNodes(createParsed, 'run');
+  const runNode = runs[0];
+  const worklistId = runNode
+    ? String(
+        (runNode as Record<string, unknown>)['@_worklistId'] ?? (runNode as Record<string, unknown>)['@_id'] ?? '1',
+      )
+    : '1';
 
   const resultResp = await http.get(`/sap/bc/adt/atc/worklists/${worklistId}`, {
     Accept: 'application/atc.worklist.v1+xml',
@@ -247,23 +260,40 @@ export interface AtcFinding {
   line: number;
 }
 
-function parseSyntaxCheckResult(xml: string): SyntaxCheckResult {
-  const messages: SyntaxMessage[] = [];
-  // Parse check messages from XML
-  const msgRegex = /<msg[^>]*type="([^"]*)"[^>]*line="(\d+)"[^>]*col="(\d+)"[^>]*>/g;
-  const textRegex = /shortText="([^"]*)"/;
+/** Parse activation response XML to detect errors via proper XML parsing */
+export function parseActivationResult(xml: string): { success: boolean; messages: string[] } {
+  if (!xml.trim()) return { success: true, messages: [] };
 
-  let match: RegExpExecArray | null;
-  while ((match = msgRegex.exec(xml)) !== null) {
-    const fullTag = xml.slice(match.index, xml.indexOf('>', match.index + match[0].length) + 1);
-    const textMatch = textRegex.exec(fullTag);
-    messages.push({
-      severity: match[1] === 'E' ? 'error' : match[1] === 'W' ? 'warning' : 'info',
-      text: textMatch?.[1] ?? '',
-      line: Number.parseInt(match[2]!, 10),
-      column: Number.parseInt(match[3]!, 10),
-    });
+  const parsed = parseXml(xml);
+  const msgs = findDeepNodes(parsed, 'msg');
+  const messages: string[] = [];
+  let hasErrors = false;
+
+  for (const m of msgs) {
+    const severity = String(m['@_severity'] ?? '');
+    const type = String(m['@_type'] ?? '');
+    if (severity === 'error' || severity === 'fatal' || type === 'E' || type === 'A') {
+      hasErrors = true;
+    }
+    const shortText = String(m['@_shortText'] ?? '');
+    if (shortText) messages.push(shortText);
   }
+
+  return { success: !hasErrors, messages };
+}
+
+function parseSyntaxCheckResult(xml: string): SyntaxCheckResult {
+  const parsed = parseXml(xml);
+  const msgs = findDeepNodes(parsed, 'msg');
+  const messages: SyntaxMessage[] = msgs.map((m) => {
+    const type = String(m['@_type'] ?? '');
+    return {
+      severity: type === 'E' ? 'error' : type === 'W' ? 'warning' : 'info',
+      text: String(m['@_shortText'] ?? ''),
+      line: Number.parseInt(String(m['@_line'] ?? '0'), 10),
+      column: Number.parseInt(String(m['@_col'] ?? '0'), 10),
+    };
+  });
 
   return {
     hasErrors: messages.some((m) => m.severity === 'error'),
@@ -273,47 +303,85 @@ function parseSyntaxCheckResult(xml: string): SyntaxCheckResult {
 
 function parseUnitTestResults(xml: string): UnitTestResult[] {
   const results: UnitTestResult[] = [];
-  // Extract test results from ABAP Unit XML response
-  const testMethodRegex = /<testMethod[^>]*name="([^"]*)"[^>]*>/g;
+  const parsed = parseXml(xml);
+  const testClasses = findDeepNodes(parsed, 'testClass');
 
-  let match: RegExpExecArray | null;
-  while ((match = testMethodRegex.exec(xml)) !== null) {
-    const methodName = match[1]!;
-    // Check for alerts after this method
-    const afterMatch = xml.slice(match.index);
-    const hasAlert = afterMatch.includes('<alert') && afterMatch.indexOf('<alert') < afterMatch.indexOf('</testMethod');
+  for (const tc of testClasses) {
+    const className = String(tc['@_name'] ?? '');
+    const uri = String(tc['@_uri'] ?? '');
+    // Extract program name from URI:
+    //   classes: /sap/bc/adt/oo/classes/ZCL_TEST/...
+    //   programs: /sap/bc/adt/programs/programs/ZTEST/...  (note: "programs" appears twice)
+    const uriParts = uri.split('/');
+    let program = '';
+    for (let i = 0; i < uriParts.length - 1; i++) {
+      if (uriParts[i] === 'classes') {
+        program = uriParts[i + 1] ?? '';
+        break;
+      }
+      if (uriParts[i] === 'programs' && uriParts[i + 1] === 'programs' && i + 2 < uriParts.length) {
+        program = uriParts[i + 2] ?? '';
+        break;
+      }
+    }
 
-    results.push({
-      program: '',
-      testClass: '',
-      testMethod: methodName,
-      status: hasAlert ? 'failed' : 'passed',
-    });
+    const methods = findDeepNodes(tc, 'testMethod');
+    for (const method of methods) {
+      const methodName = String(method['@_name'] ?? '');
+      const alerts = findDeepNodes(method, 'alert');
+      const hasAlert = alerts.length > 0;
+      // Extract message from first alert's title element
+      let message: string | undefined;
+      if (hasAlert) {
+        const titleVal = (alerts[0] as Record<string, unknown>).title;
+        if (titleVal != null) {
+          if (typeof titleVal === 'string') {
+            message = titleVal;
+          } else if (typeof titleVal === 'object' && !Array.isArray(titleVal)) {
+            message = String((titleVal as Record<string, unknown>)['#text'] ?? '');
+          } else {
+            message = String(titleVal);
+          }
+        }
+      }
+      // Extract duration from executionTime attribute (in seconds)
+      const execTime = method['@_executionTime'];
+      const duration = execTime ? Number(execTime) : undefined;
+
+      results.push({
+        program,
+        testClass: className,
+        testMethod: methodName,
+        status: hasAlert ? 'failed' : 'passed',
+        ...(message ? { message } : {}),
+        ...(duration !== undefined && !Number.isNaN(duration) ? { duration } : {}),
+      });
+    }
   }
 
   return results;
 }
 
 function parseAtcFindings(xml: string): AtcFinding[] {
-  const findings: AtcFinding[] = [];
-  const findingRegex = /<finding[^>]*priority="(\d)"[^>]*checkTitle="([^"]*)"[^>]*messageTitle="([^"]*)"[^>]*/g;
+  const parsed = parseXml(xml);
+  const nodes = findDeepNodes(parsed, 'finding');
 
-  let match: RegExpExecArray | null;
-  while ((match = findingRegex.exec(xml)) !== null) {
-    findings.push({
-      priority: Number.parseInt(match[1]!, 10),
-      checkTitle: match[2]!,
-      messageTitle: match[3]!,
-      uri: '',
-      line: 0,
-    });
-  }
+  return nodes.map((f) => {
+    const rawUri = String(f['@_uri'] ?? f['@_location'] ?? '');
+    let line = 0;
+    const startIdx = rawUri.indexOf('#start=');
+    if (startIdx !== -1) {
+      const fragment = rawUri.slice(startIdx + '#start='.length);
+      const firstNum = Number.parseInt(fragment.split(',')[0]!, 10);
+      if (!Number.isNaN(firstNum)) line = firstNum;
+    }
 
-  return findings;
-}
-
-function extractAttr(xml: string, attr: string): string {
-  const regex = new RegExp(`${attr}="([^"]*)"`);
-  const match = xml.match(regex);
-  return match?.[1] ?? '';
+    return {
+      priority: Number.parseInt(String(f['@_priority'] ?? '0'), 10),
+      checkTitle: String(f['@_checkTitle'] ?? ''),
+      messageTitle: String(f['@_messageTitle'] ?? ''),
+      uri: rawUri,
+      line,
+    };
+  });
 }

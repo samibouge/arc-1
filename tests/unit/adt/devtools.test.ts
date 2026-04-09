@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   activate,
   activateBatch,
+  parseActivationResult,
   publishServiceBinding,
   runAtcCheck,
   runUnitTests,
@@ -82,6 +83,15 @@ describe('DevTools', () => {
       );
     });
 
+    it('handles reversed attribute order (Issue #3)', async () => {
+      const xml = '<checkMessages><msg line="5" col="1" type="E" shortText="Error found"/></checkMessages>';
+      const http = mockHttp(xml);
+      const result = await syntaxCheck(http, unrestrictedSafetyConfig(), '/sap/bc/adt/programs/programs/ZTEST');
+      expect(result.hasErrors).toBe(true);
+      expect(result.messages).toHaveLength(1);
+      expect(result.messages[0]).toEqual({ severity: 'error', text: 'Error found', line: 5, column: 1 });
+    });
+
     it('is blocked when Read is disallowed', async () => {
       const http = mockHttp();
       const safety = { ...unrestrictedSafetyConfig(), disallowedOps: 'R' };
@@ -119,11 +129,55 @@ describe('DevTools', () => {
       expect(result.success).toBe(false);
     });
 
+    it('does not false-positive on adtcore:type="ENHO/E" in URIs (Issue #11)', async () => {
+      const xml = `<messages>
+        <msg severity="info" shortText="Object activated" adtcore:type="ENHO/E" adtcore:uri="/sap/bc/adt/enhancements/ZENHO_TEST"/>
+      </messages>`;
+      const http = mockHttp(xml);
+      const result = await activate(http, unrestrictedSafetyConfig(), '/sap/bc/adt/enhancements/ZENHO_TEST');
+      expect(result.success).toBe(true);
+    });
+
+    it('detects severity="fatal" and type="A" as errors', async () => {
+      const xml = `<messages>
+        <msg severity="fatal" shortText="Fatal activation error"/>
+        <msg type="A" shortText="Abend during activation"/>
+      </messages>`;
+      const http = mockHttp(xml);
+      const result = await activate(http, unrestrictedSafetyConfig(), '/sap/bc/adt/programs/programs/ZTEST');
+      expect(result.success).toBe(false);
+      expect(result.messages).toContain('Fatal activation error');
+      expect(result.messages).toContain('Abend during activation');
+    });
+
+    it('detects type="A" alone as error without severity attribute', async () => {
+      const xml = `<messages>
+        <msg type="A" shortText="Abend during activation"/>
+      </messages>`;
+      const http = mockHttp(xml);
+      const result = await activate(http, unrestrictedSafetyConfig(), '/sap/bc/adt/programs/programs/ZTEST');
+      expect(result.success).toBe(false);
+      expect(result.messages).toContain('Abend during activation');
+    });
+
     it('extracts multiple messages', async () => {
       const xml = '<messages><msg shortText="Warning 1"/><msg shortText="Warning 2"/></messages>';
       const http = mockHttp(xml);
       const result = await activate(http, unrestrictedSafetyConfig(), '/sap/bc/adt/programs/programs/ZTEST');
       expect(result.messages).toHaveLength(2);
+    });
+
+    it('returns success for empty response body', async () => {
+      const http = mockHttp('');
+      const result = await activate(http, unrestrictedSafetyConfig(), '/sap/bc/adt/programs/programs/ZTEST');
+      expect(result.success).toBe(true);
+      expect(result.messages).toEqual([]);
+    });
+
+    it('returns success for whitespace-only response body', () => {
+      const result = parseActivationResult('   ');
+      expect(result.success).toBe(true);
+      expect(result.messages).toEqual([]);
     });
 
     it('sends activation request to correct endpoint with method param', async () => {
@@ -299,20 +353,26 @@ describe('DevTools', () => {
   // ─── runUnitTests ──────────────────────────────────────────────────
 
   describe('runUnitTests', () => {
-    it('parses passing tests', async () => {
+    it('parses passing tests with class info', async () => {
       const xml = `<testResult>
-        <testMethod name="test_success"></testMethod>
+        <testClass name="LTCL_TEST" uri="/sap/bc/adt/oo/classes/ZCL_TEST/includes/testclasses">
+          <testMethod name="test_success"></testMethod>
+        </testClass>
       </testResult>`;
       const http = mockHttp(xml);
       const results = await runUnitTests(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST');
       expect(results).toHaveLength(1);
       expect(results[0]?.testMethod).toBe('test_success');
       expect(results[0]?.status).toBe('passed');
+      expect(results[0]?.testClass).toBe('LTCL_TEST');
+      expect(results[0]?.program).toBe('ZCL_TEST');
     });
 
     it('detects failing tests (with alerts)', async () => {
       const xml = `<testResult>
-        <testMethod name="test_fail"><alert kind="failedAssertion"/></testMethod>
+        <testClass name="LTCL_TEST" uri="/sap/bc/adt/oo/classes/ZCL_TEST/includes/testclasses">
+          <testMethod name="test_fail"><alert kind="failedAssertion"><title>Expected X got Y</title></alert></testMethod>
+        </testClass>
       </testResult>`;
       const http = mockHttp(xml);
       const results = await runUnitTests(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST');
@@ -328,9 +388,11 @@ describe('DevTools', () => {
 
     it('handles multiple test methods', async () => {
       const xml = `<testResult>
-        <testMethod name="test_a"></testMethod>
-        <testMethod name="test_b"><alert kind="failedAssertion"/></testMethod>
-        <testMethod name="test_c"></testMethod>
+        <testClass name="LTCL_TEST" uri="/sap/bc/adt/oo/classes/ZCL_TEST/includes/testclasses">
+          <testMethod name="test_a"></testMethod>
+          <testMethod name="test_b"><alert kind="failedAssertion"><title>Assertion failed</title></alert></testMethod>
+          <testMethod name="test_c"></testMethod>
+        </testClass>
       </testResult>`;
       const http = mockHttp(xml);
       const results = await runUnitTests(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST');
@@ -338,6 +400,60 @@ describe('DevTools', () => {
       expect(results[0]?.status).toBe('passed');
       expect(results[1]?.status).toBe('failed');
       expect(results[2]?.status).toBe('passed');
+    });
+
+    it('extracts alert message from title element', async () => {
+      const xml = `<testResult>
+        <testClass name="LTCL_TEST" uri="/sap/bc/adt/oo/classes/ZCL_TEST/includes/testclasses">
+          <testMethod name="test_fail">
+            <alert kind="failedAssertion"><title>Expected 42 got 0</title></alert>
+          </testMethod>
+        </testClass>
+      </testResult>`;
+      const http = mockHttp(xml);
+      const results = await runUnitTests(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST');
+      expect(results).toHaveLength(1);
+      expect(results[0]?.message).toBe('Expected 42 got 0');
+    });
+
+    it('parses multiple test classes in one response', async () => {
+      const xml = `<testResult>
+        <testClass name="LTCL_FIRST" uri="/sap/bc/adt/oo/classes/ZCL_TEST/includes/testclasses">
+          <testMethod name="test_one"></testMethod>
+        </testClass>
+        <testClass name="LTCL_SECOND" uri="/sap/bc/adt/oo/classes/ZCL_TEST/includes/testclasses">
+          <testMethod name="test_two"></testMethod>
+        </testClass>
+      </testResult>`;
+      const http = mockHttp(xml);
+      const results = await runUnitTests(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST');
+      expect(results).toHaveLength(2);
+      expect(results[0]?.testClass).toBe('LTCL_FIRST');
+      expect(results[0]?.testMethod).toBe('test_one');
+      expect(results[1]?.testClass).toBe('LTCL_SECOND');
+      expect(results[1]?.testMethod).toBe('test_two');
+    });
+
+    it('extracts program name from URI', async () => {
+      const xml = `<testResult>
+        <testClass name="LTCL_TEST" uri="/sap/bc/adt/oo/classes/ZCL_MY_CLASS/includes/testclasses">
+          <testMethod name="test_it"></testMethod>
+        </testClass>
+      </testResult>`;
+      const http = mockHttp(xml);
+      const results = await runUnitTests(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_MY_CLASS');
+      expect(results[0]?.program).toBe('ZCL_MY_CLASS');
+    });
+
+    it('extracts duration from executionTime attribute', async () => {
+      const xml = `<testResult>
+        <testClass name="LTCL_TEST" uri="/sap/bc/adt/oo/classes/ZCL_TEST/includes/testclasses">
+          <testMethod name="test_fast" executionTime="0.015"></testMethod>
+        </testClass>
+      </testResult>`;
+      const http = mockHttp(xml);
+      const results = await runUnitTests(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST');
+      expect(results[0]?.duration).toBe(0.015);
     });
 
     it('is blocked when T is disallowed', async () => {
@@ -351,10 +467,10 @@ describe('DevTools', () => {
 
   describe('runAtcCheck', () => {
     it('parses ATC findings', async () => {
-      const createResp = '<atcResult id="42"/>';
+      const createResp = '<atc:run xmlns:atc="http://www.sap.com/adt/atc" id="42" worklistId="42"/>';
       const resultResp = `<worklist>
-        <finding priority="1" checkTitle="Extended Check" messageTitle="Unused variable"/>
-        <finding priority="2" checkTitle="Naming" messageTitle="Non-standard naming"/>
+        <finding priority="1" checkTitle="Extended Check" messageTitle="Unused variable" uri="/sap/bc/adt/oo/classes/ZCL_TEST/source/main#start=42,1"/>
+        <finding priority="2" checkTitle="Naming" messageTitle="Non-standard naming" uri="/sap/bc/adt/oo/classes/ZCL_TEST/source/main#start=10,5"/>
       </worklist>`;
       const http = {
         ...mockHttp(createResp),
@@ -365,11 +481,14 @@ describe('DevTools', () => {
       expect(result.findings).toHaveLength(2);
       expect(result.findings[0]?.priority).toBe(1);
       expect(result.findings[0]?.checkTitle).toBe('Extended Check');
+      expect(result.findings[0]?.uri).toContain('/sap/bc/adt/oo/classes/ZCL_TEST');
+      expect(result.findings[0]?.line).toBe(42);
       expect(result.findings[1]?.priority).toBe(2);
+      expect(result.findings[1]?.line).toBe(10);
     });
 
     it('handles empty ATC results', async () => {
-      const createResp = '<atcResult id="42"/>';
+      const createResp = '<atc:run xmlns:atc="http://www.sap.com/adt/atc" id="42" worklistId="42"/>';
       const resultResp = '<worklist/>';
       const http = {
         ...mockHttp(createResp),
@@ -381,7 +500,7 @@ describe('DevTools', () => {
     });
 
     it('sends create request and fetches worklist', async () => {
-      const createResp = '<atcResult id="123"/>';
+      const createResp = '<atc:run xmlns:atc="http://www.sap.com/adt/atc" id="123" worklistId="123"/>';
       const resultResp = '<worklist/>';
       const http = {
         ...mockHttp(createResp),
@@ -398,9 +517,72 @@ describe('DevTools', () => {
         expect.objectContaining({ Accept: 'application/xml' }),
       );
       expect(http.get).toHaveBeenCalledWith(
-        expect.stringContaining('/sap/bc/adt/atc/worklists/'),
+        '/sap/bc/adt/atc/worklists/123',
         expect.objectContaining({ Accept: expect.stringContaining('atc.worklist') }),
       );
+    });
+
+    it('prefers worklistId over id attribute', async () => {
+      const createResp = '<atc:run id="run123" worklistId="wl456"/>';
+      const resultResp = '<worklist/>';
+      const http = {
+        ...mockHttp(createResp),
+        get: vi.fn().mockResolvedValue({ statusCode: 200, headers: {}, body: resultResp }),
+      } as unknown as AdtHttpClient;
+
+      await runAtcCheck(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST');
+
+      expect(http.get).toHaveBeenCalledWith(
+        '/sap/bc/adt/atc/worklists/wl456',
+        expect.objectContaining({ Accept: expect.stringContaining('atc.worklist') }),
+      );
+    });
+
+    it('extracts URI and line from #start= fragment', async () => {
+      const createResp = '<atc:run xmlns:atc="http://www.sap.com/adt/atc" id="42" worklistId="42"/>';
+      const resultResp = `<worklist>
+        <finding priority="1" checkTitle="Check" messageTitle="Issue" uri="/sap/bc/adt/oo/classes/ZCL_X/source/main#start=42,1"/>
+      </worklist>`;
+      const http = {
+        ...mockHttp(createResp),
+        get: vi.fn().mockResolvedValue({ statusCode: 200, headers: {}, body: resultResp }),
+      } as unknown as AdtHttpClient;
+
+      const result = await runAtcCheck(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_X');
+      expect(result.findings[0]?.uri).toBe('/sap/bc/adt/oo/classes/ZCL_X/source/main#start=42,1');
+      expect(result.findings[0]?.line).toBe(42);
+    });
+
+    it('returns empty uri and line 0 for finding without URI', async () => {
+      const createResp = '<atc:run xmlns:atc="http://www.sap.com/adt/atc" id="42" worklistId="42"/>';
+      const resultResp = `<worklist>
+        <finding priority="3" checkTitle="Check" messageTitle="General issue"/>
+      </worklist>`;
+      const http = {
+        ...mockHttp(createResp),
+        get: vi.fn().mockResolvedValue({ statusCode: 200, headers: {}, body: resultResp }),
+      } as unknown as AdtHttpClient;
+
+      const result = await runAtcCheck(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_X');
+      expect(result.findings[0]?.uri).toBe('');
+      expect(result.findings[0]?.line).toBe(0);
+    });
+
+    it('parses correctly regardless of attribute order', async () => {
+      const createResp = '<atc:run xmlns:atc="http://www.sap.com/adt/atc" id="42" worklistId="42"/>';
+      const resultResp = `<worklist>
+        <finding messageTitle="Wrong order" priority="2" uri="/sap/bc/adt/programs/programs/ZTEST#start=7,3" checkTitle="Order Check"/>
+      </worklist>`;
+      const http = {
+        ...mockHttp(createResp),
+        get: vi.fn().mockResolvedValue({ statusCode: 200, headers: {}, body: resultResp }),
+      } as unknown as AdtHttpClient;
+
+      const result = await runAtcCheck(http, unrestrictedSafetyConfig(), '/sap/bc/adt/programs/programs/ZTEST');
+      expect(result.findings[0]?.priority).toBe(2);
+      expect(result.findings[0]?.checkTitle).toBe('Order Check');
+      expect(result.findings[0]?.messageTitle).toBe('Wrong order');
+      expect(result.findings[0]?.line).toBe(7);
     });
   });
 });
