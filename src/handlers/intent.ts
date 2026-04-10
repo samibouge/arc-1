@@ -593,6 +593,20 @@ async function handleSAPRead(
       }
       return textResult(JSON.stringify(tran, null, 2));
     }
+    case 'API_STATE': {
+      // Determine object type for URL construction — use explicit objectType, infer from name, or error
+      const explicitType = String(args.objectType ?? '').toUpperCase();
+      const inferredType = explicitType || inferObjectType(name);
+      if (!inferredType) {
+        return errorResult(
+          `Cannot infer object type from name "${name}". Please specify objectType explicitly (e.g., objectType="CLAS", "INTF", "PROG", "TABL", "DDLS", "FUGR", "DOMA", "DTEL", "SRVD", "SRVB", "BDEF").`,
+        );
+      }
+      // Use raw URI (no name encoding) — getApiReleaseState encodes the full URI as a single path segment
+      const objectUri = objectUrlForTypeRaw(inferredType, name);
+      const releaseState = await client.getApiReleaseState(objectUri);
+      return textResult(JSON.stringify(releaseState, null, 2));
+    }
     case 'TABLE_CONTENTS': {
       const maxRows = Number(args.maxRows ?? 100);
       const data = await client.getTableContents(name, maxRows, args.sqlFilter as string | undefined);
@@ -695,7 +709,7 @@ async function handleSAPRead(
     }
     default:
       return errorResult(
-        `Unknown SAPRead type: "${type}". Supported types: PROG, CLAS, INTF, FUNC, FUGR, INCL, DDLS, DDLX, BDEF, SRVD, SRVB, TABL, VIEW, STRU, DOMA, DTEL, TRAN, TABLE_CONTENTS, DEVC, SOBJ, SYSTEM, COMPONENTS, MESSAGES, TEXT_ELEMENTS, VARIANTS, BSP, BSP_DEPLOY. ` +
+        `Unknown SAPRead type: "${type}". Supported types: PROG, CLAS, INTF, FUNC, FUGR, INCL, DDLS, DDLX, BDEF, SRVD, SRVB, TABL, VIEW, STRU, DOMA, DTEL, TRAN, TABLE_CONTENTS, DEVC, SOBJ, SYSTEM, COMPONENTS, MESSAGES, TEXT_ELEMENTS, VARIANTS, BSP, BSP_DEPLOY, API_STATE. ` +
           'Tip: Map objectType from SAPSearch results by dropping the slash suffix (e.g., DDLS/DF → type="DDLS", CLAS/OC → type="CLAS", PROG/P → type="PROG"). ' +
           'Do not pass a URI — use the "type" and "name" parameters instead.',
       );
@@ -1005,45 +1019,66 @@ function escapeXml(s: string): string {
 
 // ─── Object URL Mapping ──────────────────────────────────────────────
 
-/** Map object type + name to the ADT object URL used by CRUD/DevTools/etc. */
-function objectUrlForType(type: string, name: string): string {
-  const encoded = encodeURIComponent(name);
+/** Base path for an object type. Returns path prefix without trailing name segment. */
+function objectBasePath(type: string): string {
   switch (type) {
     case 'PROG':
-      return `/sap/bc/adt/programs/programs/${encoded}`;
+      return '/sap/bc/adt/programs/programs/';
     case 'CLAS':
-      return `/sap/bc/adt/oo/classes/${encoded}`;
+      return '/sap/bc/adt/oo/classes/';
     case 'INTF':
-      return `/sap/bc/adt/oo/interfaces/${encoded}`;
+      return '/sap/bc/adt/oo/interfaces/';
     case 'FUNC':
-      return `/sap/bc/adt/functions/groups/${encoded}`;
+      return '/sap/bc/adt/functions/groups/';
     case 'INCL':
-      return `/sap/bc/adt/programs/includes/${encoded}`;
+      return '/sap/bc/adt/programs/includes/';
     case 'FUGR':
-      return `/sap/bc/adt/functions/groups/${encoded}`;
+      return '/sap/bc/adt/functions/groups/';
     case 'DDLS':
-      return `/sap/bc/adt/ddic/ddl/sources/${encoded}`;
+      return '/sap/bc/adt/ddic/ddl/sources/';
     case 'BDEF':
-      return `/sap/bc/adt/bo/behaviordefinitions/${encoded}`;
+      return '/sap/bc/adt/bo/behaviordefinitions/';
     case 'SRVD':
-      return `/sap/bc/adt/ddic/srvd/sources/${encoded}`;
+      return '/sap/bc/adt/ddic/srvd/sources/';
     case 'DDLX':
-      return `/sap/bc/adt/ddic/ddlx/sources/${encoded}`;
+      return '/sap/bc/adt/ddic/ddlx/sources/';
     case 'SRVB':
-      return `/sap/bc/adt/businessservices/bindings/${encoded}`;
+      return '/sap/bc/adt/businessservices/bindings/';
     case 'TABL':
-      return `/sap/bc/adt/ddic/tables/${encoded}`;
+      return '/sap/bc/adt/ddic/tables/';
     case 'STRU':
-      return `/sap/bc/adt/ddic/structures/${encoded}`;
+      return '/sap/bc/adt/ddic/structures/';
     case 'DOMA':
-      return `/sap/bc/adt/ddic/domains/${encoded}`;
+      return '/sap/bc/adt/ddic/domains/';
     case 'DTEL':
-      return `/sap/bc/adt/ddic/dataelements/${encoded}`;
+      return '/sap/bc/adt/ddic/dataelements/';
     case 'TRAN':
-      return `/sap/bc/adt/vit/wb/object_type/trant/object_name/${encoded}`;
+      return '/sap/bc/adt/vit/wb/object_type/trant/object_name/';
     default:
-      return `/sap/bc/adt/programs/programs/${encoded}`;
+      return '/sap/bc/adt/programs/programs/';
   }
+}
+
+/** Map object type + name to the ADT object URL used by CRUD/DevTools/etc. Name is URI-encoded. */
+function objectUrlForType(type: string, name: string): string {
+  return `${objectBasePath(type)}${encodeURIComponent(name)}`;
+}
+
+/** Infer SAP object type from naming conventions. Returns empty string if type cannot be determined. */
+function inferObjectType(name: string): string {
+  const upper = name.toUpperCase();
+  if (upper.startsWith('IF_') || upper.startsWith('ZIF_') || upper.startsWith('YIF_')) return 'INTF';
+  if (upper.startsWith('CL_') || upper.startsWith('ZCL_') || upper.startsWith('YCL_')) return 'CLAS';
+  if (upper.startsWith('CX_') || upper.startsWith('ZCX_') || upper.startsWith('YCX_')) return 'CLAS';
+  return '';
+}
+
+/**
+ * Map object type + name to the ADT object URL WITHOUT encoding the name.
+ * Used for API release state where the full URI is encoded as a single path segment by the caller.
+ */
+function objectUrlForTypeRaw(type: string, name: string): string {
+  return `${objectBasePath(type)}${name}`;
 }
 
 /** Get the source URL for an object (appends /source/main) */
