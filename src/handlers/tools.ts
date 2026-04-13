@@ -187,10 +187,18 @@ const SAPSEARCH_DESC_BTP =
 
 // ─── SAPTransport ───────────────────────────────────────────────────
 
-const SAPTRANSPORT_DESC_ONPREM = 'Manage CTS transport requests: list, get details, create, and release.';
+const SAPTRANSPORT_DESC_ONPREM =
+  'Manage CTS transport requests (SE09/SE10 equivalent). ' +
+  'Actions: list (defaults to current user, modifiable transports — both Workbench and Customizing), ' +
+  'get (details with tasks and objects), create (K=Workbench, W=Customizing, T=Transport of Copies), ' +
+  'release, delete, reassign (change owner), release_recursive (release tasks first, then parent). ' +
+  'Transport IDs look like A4HK900123. Status: D=modifiable, R=released.';
 
 const SAPTRANSPORT_DESC_BTP =
-  'Manage transport requests (BTP ABAP Environment): list, get details, create, and release. ' +
+  'Manage transport requests (BTP ABAP Environment, SE09/SE10 equivalent). ' +
+  'Actions: list (defaults to current user, modifiable transports — both Workbench and Customizing), ' +
+  'get (details with tasks and objects), create (K=Workbench, W=Customizing, T=Transport of Copies), ' +
+  'release, delete, reassign (change owner), release_recursive (release tasks first, then parent). ' +
   'On BTP, transport release triggers a gCTS push to the software component Git repository. ' +
   'Import into target systems is done via the Manage Software Components app or Cloud Transport Management Service (cTMS), not via this tool.';
 
@@ -652,10 +660,43 @@ export function getToolDefinitions(config: ServerConfig, textSearchAvailable?: b
       inputSchema: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['list', 'get', 'create', 'release'], description: 'Transport action' },
-          id: { type: 'string', description: 'Transport request ID (for get/release)' },
-          description: { type: 'string', description: 'Description (for create)' },
-          user: { type: 'string', description: 'Filter by user (for list)' },
+          action: {
+            type: 'string',
+            enum: ['list', 'get', 'create', 'release', 'delete', 'reassign', 'release_recursive'],
+            description:
+              'list: show transports (defaults to current user, modifiable only). ' +
+              'get: fetch transport details including tasks and objects. ' +
+              'create: create a new transport request. ' +
+              'release: release a single transport or task. ' +
+              'delete: delete a transport (use recursive=true to delete tasks first). ' +
+              'reassign: change transport owner (use recursive=true for tasks too). ' +
+              'release_recursive: release all unreleased tasks first, then the transport itself.',
+          },
+          id: {
+            type: 'string',
+            description:
+              'Transport request ID, e.g. A4HK900123 (required for get/release/delete/reassign/release_recursive)',
+          },
+          description: { type: 'string', description: 'Transport description text (required for create)' },
+          user: {
+            type: 'string',
+            description:
+              'SAP username to filter by (for list). Defaults to the current SAP user. Use "*" to list all users.',
+          },
+          status: {
+            type: 'string',
+            description: 'Transport status filter (for list). D=modifiable (default), R=released, "*"=all statuses.',
+          },
+          type: {
+            type: 'string',
+            enum: ['K', 'W', 'T'],
+            description: 'Transport type for create: K=Workbench (default), W=Customizing, T=Transport of Copies',
+          },
+          owner: { type: 'string', description: 'New owner SAP username (required for reassign)' },
+          recursive: {
+            type: 'boolean',
+            description: 'Apply recursively to child tasks (for delete/reassign). release_recursive always recurses.',
+          },
         },
         required: ['action'],
       },
