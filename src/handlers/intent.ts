@@ -21,7 +21,21 @@ import {
   type ReferenceResult,
   type WhereUsedResult,
 } from '../adt/codeintel.js';
-import { createObject, deleteObject, lockObject, safeUpdateSource, unlockObject } from '../adt/crud.js';
+import {
+  createObject,
+  deleteObject,
+  lockObject,
+  safeUpdateObject,
+  safeUpdateSource,
+  unlockObject,
+  updateObject,
+} from '../adt/crud.js';
+import {
+  buildDataElementXml,
+  buildDomainXml,
+  type DataElementCreateParams,
+  type DomainCreateParams,
+} from '../adt/ddic-xml.js';
 import {
   activate,
   activateBatch,
@@ -952,6 +966,142 @@ function buildLintConfigOptions(config: ServerConfig, ruleOverrides?: RuleOverri
 
 // ─── Object Creation XML ─────────────────────────────────────────────
 
+const DOMAIN_V2_CONTENT_TYPE = 'application/vnd.sap.adt.domains.v2+xml; charset=utf-8';
+const DATAELEMENT_V2_CONTENT_TYPE = 'application/vnd.sap.adt.dataelements.v2+xml; charset=utf-8';
+
+function isDdicMetadataType(type: string): boolean {
+  return type === 'DOMA' || type === 'DTEL';
+}
+
+/**
+ * Check if a DTEL create has properties that SAP ignores on POST but accepts on PUT.
+ * SAP's DTEL POST only stores the shell (name, description, package, typeKind, typeName, dataType, length).
+ * Labels, searchHelp, setGetParameter, etc. require a follow-up PUT to take effect.
+ */
+function dtelNeedsPostCreateUpdate(props: Record<string, unknown>): boolean {
+  return Boolean(
+    props.shortLabel ||
+      props.mediumLabel ||
+      props.longLabel ||
+      props.headingLabel ||
+      props.searchHelp ||
+      props.searchHelpParameter ||
+      props.setGetParameter ||
+      props.defaultComponentName ||
+      props.changeDocument,
+  );
+}
+
+function ddicContentTypeForType(type: string): string {
+  switch (type) {
+    case 'DOMA':
+      return DOMAIN_V2_CONTENT_TYPE;
+    case 'DTEL':
+      return DATAELEMENT_V2_CONTENT_TYPE;
+    default:
+      return 'application/xml';
+  }
+}
+
+function toBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  return undefined;
+}
+
+function getDdicWriteProperties(input: Record<string, unknown>): Record<string, unknown> {
+  const props: Record<string, unknown> = {
+    dataType: input.dataType,
+    length: input.length,
+    decimals: input.decimals,
+    outputLength: input.outputLength,
+    conversionExit: input.conversionExit,
+    signExists: input.signExists,
+    lowercase: input.lowercase,
+    fixedValues: input.fixedValues,
+    valueTable: input.valueTable,
+    typeKind: input.typeKind,
+    typeName: input.typeName,
+    domainName: input.domainName,
+    shortLabel: input.shortLabel,
+    mediumLabel: input.mediumLabel,
+    longLabel: input.longLabel,
+    headingLabel: input.headingLabel,
+    searchHelp: input.searchHelp,
+    searchHelpParameter: input.searchHelpParameter,
+    setGetParameter: input.setGetParameter,
+    defaultComponentName: input.defaultComponentName,
+    changeDocument: input.changeDocument,
+  };
+
+  return props;
+}
+
+/**
+ * Fetch existing DDIC metadata and merge with provided properties.
+ * This ensures that updating a single field (e.g., shortLabel) doesn't
+ * reset other fields (e.g., dataType, typeKind) to defaults, since
+ * DDIC updates are full-XML-replace operations.
+ *
+ * Internal _description and _package fields carry the existing values
+ * for the caller to use as fallbacks.
+ */
+async function mergeDdicProperties(
+  client: AdtClient,
+  type: string,
+  name: string,
+  provided: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  try {
+    if (type === 'DOMA') {
+      const existing = await client.getDomain(name);
+      return {
+        _description: existing.description,
+        _package: existing.package,
+        dataType: provided.dataType ?? existing.dataType,
+        length: provided.length ?? existing.length,
+        decimals: provided.decimals ?? existing.decimals,
+        outputLength: provided.outputLength ?? existing.outputLength,
+        conversionExit: provided.conversionExit ?? existing.conversionExit,
+        signExists: provided.signExists ?? existing.signExists,
+        lowercase: provided.lowercase ?? existing.lowercase,
+        fixedValues: provided.fixedValues ?? existing.fixedValues,
+        valueTable: provided.valueTable ?? existing.valueTable,
+      };
+    }
+    if (type === 'DTEL') {
+      const existing = await client.getDataElement(name);
+      return {
+        _description: existing.description,
+        _package: existing.package,
+        dataType: provided.dataType ?? existing.dataType,
+        length: provided.length ?? existing.length,
+        decimals: provided.decimals ?? existing.decimals,
+        typeKind: provided.typeKind ?? existing.typeKind,
+        typeName: provided.typeName ?? existing.typeName,
+        domainName: provided.domainName ?? existing.typeName, // DTEL stores domain in typeName
+        shortLabel: provided.shortLabel ?? existing.shortLabel,
+        mediumLabel: provided.mediumLabel ?? existing.mediumLabel,
+        longLabel: provided.longLabel ?? existing.longLabel,
+        headingLabel: provided.headingLabel ?? existing.headingLabel,
+        searchHelp: provided.searchHelp ?? existing.searchHelp,
+        searchHelpParameter: provided.searchHelpParameter,
+        setGetParameter: provided.setGetParameter,
+        defaultComponentName: provided.defaultComponentName ?? existing.defaultComponentName,
+        changeDocument: provided.changeDocument,
+      };
+    }
+  } catch {
+    // If we can't read existing metadata (e.g., object is new/inactive), fall through
+  }
+  return provided;
+}
+
 /**
  * Build the type-specific XML body for ADT object creation.
  *
@@ -959,7 +1109,13 @@ function buildLintConfigOptions(config: ServerConfig, ruleOverrides?: RuleOverri
  * Using a generic body (e.g. adtcore:objectReferences) returns 400:
  *   "System expected the element '{http://www.sap.com/adt/programs/programs}abapProgram'"
  */
-export function buildCreateXml(type: string, name: string, pkg: string, description: string): string {
+export function buildCreateXml(
+  type: string,
+  name: string,
+  pkg: string,
+  description: string,
+  properties?: Record<string, unknown>,
+): string {
   switch (type) {
     case 'PROG':
       return `<?xml version="1.0" encoding="UTF-8"?>
@@ -1054,9 +1210,61 @@ export function buildCreateXml(type: string, name: string, pkg: string, descript
                  adtcore:type="DDLX/EX"
                  adtcore:masterLanguage="EN"
                  adtcore:masterSystem="H00"
-                 adtcore:responsible="DEVELOPER">
+                     adtcore:responsible="DEVELOPER">
   <adtcore:packageRef adtcore:name="${escapeXml(pkg)}"/>
 </ddlx:ddlxSource>`;
+    case 'DOMA': {
+      const fixedValuesRaw = Array.isArray(properties?.fixedValues) ? properties.fixedValues : [];
+      const fixedValues = fixedValuesRaw
+        .filter((value): value is Record<string, unknown> => typeof value === 'object' && value !== null)
+        .map((value) => ({
+          low: String(value.low ?? ''),
+          high: value.high === undefined ? undefined : String(value.high),
+          description: value.description === undefined ? undefined : String(value.description),
+        }));
+
+      const params: DomainCreateParams = {
+        name,
+        description,
+        package: pkg,
+        dataType: String(properties?.dataType ?? 'CHAR'),
+        length: (properties?.length as string | number | undefined) ?? 0,
+        decimals: properties?.decimals as string | number | undefined,
+        outputLength: properties?.outputLength as string | number | undefined,
+        conversionExit: properties?.conversionExit ? String(properties.conversionExit) : undefined,
+        signExists: toBoolean(properties?.signExists),
+        lowercase: toBoolean(properties?.lowercase),
+        fixedValues,
+        valueTable: properties?.valueTable ? String(properties.valueTable) : undefined,
+      };
+      return buildDomainXml(params);
+    }
+    case 'DTEL': {
+      const typeKindRaw = String(properties?.typeKind ?? '');
+      const typeKind: DataElementCreateParams['typeKind'] =
+        typeKindRaw === 'domain' || typeKindRaw === 'predefinedAbapType' ? typeKindRaw : undefined;
+      const params: DataElementCreateParams = {
+        name,
+        description,
+        package: pkg,
+        typeKind,
+        typeName: properties?.typeName ? String(properties.typeName) : undefined,
+        domainName: properties?.domainName ? String(properties.domainName) : undefined,
+        dataType: properties?.dataType ? String(properties.dataType) : undefined,
+        length: properties?.length as string | number | undefined,
+        decimals: properties?.decimals as string | number | undefined,
+        shortLabel: properties?.shortLabel ? String(properties.shortLabel) : undefined,
+        mediumLabel: properties?.mediumLabel ? String(properties.mediumLabel) : undefined,
+        longLabel: properties?.longLabel ? String(properties.longLabel) : undefined,
+        headingLabel: properties?.headingLabel ? String(properties.headingLabel) : undefined,
+        searchHelp: properties?.searchHelp ? String(properties.searchHelp) : undefined,
+        searchHelpParameter: properties?.searchHelpParameter ? String(properties.searchHelpParameter) : undefined,
+        setGetParameter: properties?.setGetParameter ? String(properties.setGetParameter) : undefined,
+        defaultComponentName: properties?.defaultComponentName ? String(properties.defaultComponentName) : undefined,
+        changeDocument: toBoolean(properties?.changeDocument),
+      };
+      return buildDataElementXml(params);
+    }
     default:
       // Fallback — generic objectReferences using the correct URL for the type
       return `<?xml version="1.0" encoding="UTF-8"?>
@@ -1169,15 +1377,31 @@ async function handleSAPWrite(
 
   // Helper: enforce allowedPackages for existing objects (update/delete/edit_method).
   // Only fetches metadata when package restrictions are configured — no extra HTTP call otherwise.
-  async function enforcePackageForExistingObject(): Promise<void> {
-    if (client.safety.allowedPackages.length === 0) return;
+  async function enforcePackageForExistingObject(): Promise<string | undefined> {
+    if (client.safety.allowedPackages.length === 0) return undefined;
     const pkg = await client.resolveObjectPackage(objectUrl);
     if (pkg) checkPackage(client.safety, pkg);
+    return pkg;
   }
 
   switch (action) {
     case 'update': {
-      await enforcePackageForExistingObject();
+      const existingPackage = await enforcePackageForExistingObject();
+
+      if (isDdicMetadataType(type)) {
+        // DDIC updates are full-XML-replace — we must fetch existing metadata
+        // and merge with provided fields so omitted fields keep their current values.
+        // Without this, updating just labels would reset dataType/typeKind to defaults.
+        const ddicProps = getDdicWriteProperties(args);
+        const mergedProps = await mergeDdicProperties(client, type, name, ddicProps);
+        const description = String(args.description ?? mergedProps._description ?? name);
+        const pkg = String(args.package ?? existingPackage ?? mergedProps._package ?? '$TMP');
+        const body = buildCreateXml(type, name, pkg, description, mergedProps);
+        await safeUpdateObject(client.http, client.safety, objectUrl, body, ddicContentTypeForType(type), transport);
+        cachingLayer?.invalidate(type, name);
+        return textResult(`Successfully updated ${type} ${name}.`);
+      }
+
       // Pre-write lint validation
       const lintWarnings = runPreWriteLint(source, type, name, config);
       if (lintWarnings.blocked) return lintWarnings.result!;
@@ -1203,11 +1427,33 @@ async function handleSAPWrite(
       // Build type-specific creation XML body.
       // SAP ADT requires the root element to match the object type —
       // a generic objectReferences body returns 400 "System expected the element ...".
-      const body = buildCreateXml(type, name, pkg, description);
+      const ddicProperties = getDdicWriteProperties(args);
+      const body = buildCreateXml(type, name, pkg, description, ddicProperties);
 
       // Step 1: Create the object (metadata only)
       const createUrl = objectUrl.replace(/\/[^/]+$/, ''); // parent collection URL
-      const result = await createObject(client.http, client.safety, createUrl, body, 'application/xml', transport);
+      const contentType = isDdicMetadataType(type) ? ddicContentTypeForType(type) : 'application/xml';
+      const result = await createObject(client.http, client.safety, createUrl, body, contentType, transport);
+
+      if (isDdicMetadataType(type)) {
+        // SAP's DTEL POST ignores labels, searchHelp, etc. — they require a follow-up PUT.
+        // Use withStatefulSession directly (not safeUpdateObject) to keep the lock cycle
+        // on the main client's session, avoiding lock contention with subsequent operations.
+        if (type === 'DTEL' && dtelNeedsPostCreateUpdate(ddicProperties)) {
+          const ct = ddicContentTypeForType(type);
+          await client.http.withStatefulSession(async (session) => {
+            const lock = await lockObject(session, client.safety, objectUrl);
+            const effectiveTransport = transport ?? (lock.corrNr || undefined);
+            try {
+              await updateObject(session, client.safety, objectUrl, body, lock.lockHandle, ct, effectiveTransport);
+            } finally {
+              await unlockObject(session, objectUrl, lock.lockHandle);
+            }
+          });
+        }
+        cachingLayer?.invalidate(type, name);
+        return textResult(`Created ${type} ${name} in package ${pkg}.\n${result}`);
+      }
 
       // Step 2: Write source code if provided
       if (source) {
@@ -1295,6 +1541,7 @@ async function handleSAPWrite(
       for (const obj of objects) {
         const objType = String(obj.type ?? '');
         const objName = String(obj.name ?? '');
+        const metadataObject = isDdicMetadataType(objType);
         const objSource = obj.source ? String(obj.source) : undefined;
         const objDescription = String(obj.description ?? objName);
 
@@ -1311,8 +1558,9 @@ async function handleSAPWrite(
         }
 
         try {
-          // Pre-validate source with lint BEFORE creating the object to avoid orphaned objects
-          if (objSource) {
+          // Pre-validate source with lint BEFORE creating the object to avoid orphaned objects.
+          // Metadata objects (DOMA/DTEL) are XML-only and intentionally skip source lint.
+          if (!metadataObject && objSource) {
             const lintWarnings = runPreWriteLint(objSource, objType, objName, config);
             if (lintWarnings.blocked) {
               results.push({
@@ -1328,11 +1576,34 @@ async function handleSAPWrite(
           // Step 1: Create the object
           const objUrl = objectUrlForType(objType, objName);
           const createUrl = objUrl.replace(/\/[^/]+$/, '');
-          const body = buildCreateXml(objType, objName, pkg, objDescription);
-          await createObject(client.http, client.safety, createUrl, body, 'application/xml', transport);
+          const objDdicProps = getDdicWriteProperties(obj);
+          const body = buildCreateXml(objType, objName, pkg, objDescription, objDdicProps);
+          const contentType = metadataObject ? ddicContentTypeForType(objType) : 'application/xml';
+          await createObject(client.http, client.safety, createUrl, body, contentType, transport);
+
+          // Step 1b: DTEL POST ignores labels — follow up with PUT on main session
+          if (objType === 'DTEL' && dtelNeedsPostCreateUpdate(objDdicProps)) {
+            await client.http.withStatefulSession(async (session) => {
+              const lock = await lockObject(session, client.safety, objUrl);
+              const effectiveTransport = transport ?? (lock.corrNr || undefined);
+              try {
+                await updateObject(
+                  session,
+                  client.safety,
+                  objUrl,
+                  body,
+                  lock.lockHandle,
+                  contentType,
+                  effectiveTransport,
+                );
+              } finally {
+                await unlockObject(session, objUrl, lock.lockHandle);
+              }
+            });
+          }
 
           // Step 2: Write source if provided
-          if (objSource) {
+          if (!metadataObject && objSource) {
             const srcUrl = sourceUrlForType(objType, objName);
             await safeUpdateSource(client.http, client.safety, objUrl, srcUrl, objSource, transport);
           }
