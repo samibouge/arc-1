@@ -13,11 +13,21 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { requireOrSkip } from '../helpers/skip-policy.js';
 import { callTool, connectClient, expectToolSuccess } from './helpers.js';
 
-/** Generate a collision-safe unique name with a given prefix (max 30 chars). */
+/** Generate a collision-safe unique name with a given prefix (max 30 chars).
+ *  Uses letters-only encoding to avoid ABAP/CDS identifier issues —
+ *  digit sequences like "00" confuse the BDEF parser in certain positions. */
 function uniqueName(prefix: string): string {
-  const suffix = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e5)
-    .toString(36)
-    .padStart(3, '0')}`.toUpperCase();
+  // Encode timestamp + random as letters only (A-Z, base 26)
+  const toLetters = (n: number): string => {
+    let s = '';
+    let v = n;
+    while (v > 0) {
+      s = String.fromCharCode(65 + (v % 26)) + s;
+      v = Math.floor(v / 26);
+    }
+    return s || 'A';
+  };
+  const suffix = `${toLetters(Date.now())}${toLetters(Math.floor(Math.random() * 1e6))}`;
   return `${prefix}${suffix}`.slice(0, 30);
 }
 
