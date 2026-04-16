@@ -466,6 +466,7 @@ Automated via [release-please](https://github.com/googleapis/release-please). No
 
 - **stdout is sacred**: All logging goes to stderr. stdout is exclusively for MCP JSON-RPC protocol messages. Any `console.log` breaks the protocol.
 - Never commit `.env`, `cookies.txt`, or `.arc1.json` (all in `.gitignore`)
+- **`mta.yaml` is gitignored** — it contains personal/environment-specific values (BTP destination names, safety config). Only modify it locally; never `git add mta.yaml` unless explicitly force-added (`git add -f mta.yaml`).
 - Sensitive fields (password, token, cookie) are redacted in logs
 - CSRF tokens are auto-managed by `src/adt/http.ts` (fetch via HEAD, refresh on 403)
 - **Safety config is the server ceiling** — per-user scopes (JWT) can only restrict further, never expand beyond server config
