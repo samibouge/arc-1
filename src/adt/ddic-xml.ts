@@ -334,3 +334,85 @@ export function buildServiceBindingXml(params: ServiceBindingCreateParams): stri
   </srvb:binding>
 </srvb:serviceBinding>`;
 }
+
+// ─── Knowledge Transfer Documents (SKTD) ─────────────────────────────
+//
+// KTD update requires the full <sktd:docu> XML envelope with the Markdown
+// body base64-encoded inside <sktd:text>. PUTting raw text/plain silently
+// no-ops on the server. The envelope carries metadata (responsible,
+// masterLanguage, packageRef, refObject) that must be preserved from the
+// current server-side version, so we fetch-modify-put.
+
+/** Decode the Markdown body from a <sktd:docu> envelope returned by the ADT GET.
+ *
+ * A KTD may contain multiple `<sktd:element>` entries — one per documentable
+ * element of the referenced object (e.g., one per CDS field). Each element has
+ * an `<sktd:id>` and a Base64-encoded `<sktd:text>`. We extract all of them
+ * and return a combined Markdown document with element headings.
+ */
+export function decodeKtdText(envelopeXml: string): string {
+  // Extract all <sktd:element> blocks with their id and text
+  const elementPattern = /<sktd:element[^>]*>[\s\S]*?<sktd:id>([^<]*)<\/sktd:id>[\s\S]*?<\/sktd:element>/g;
+  const elements: Array<{ id: string; text: string }> = [];
+
+  let match: RegExpExecArray | null;
+  while ((match = elementPattern.exec(envelopeXml)) !== null) {
+    const elementBlock = match[0];
+    const id = match[1].trim();
+    const textMatch = elementBlock.match(/<sktd:text[^>]*>([\s\S]*?)<\/sktd:text>/);
+    const base64 = textMatch?.[1]?.trim() ?? '';
+    let decoded = '';
+    if (base64) {
+      try {
+        decoded = Buffer.from(base64, 'base64').toString('utf-8');
+      } catch {
+        decoded = '';
+      }
+    }
+    if (decoded) {
+      elements.push({ id, text: decoded });
+    }
+  }
+
+  if (elements.length === 0) {
+    // Fallback: try extracting a single <sktd:text> without element structure
+    const singleMatch = envelopeXml.match(/<sktd:text[^>]*>([\s\S]*?)<\/sktd:text>/);
+    if (!singleMatch) return '';
+    const base64 = singleMatch[1].trim();
+    if (!base64) return '';
+    try {
+      return Buffer.from(base64, 'base64').toString('utf-8');
+    } catch {
+      return '';
+    }
+  }
+
+  // Single element: return just the text (most common case — root element doc)
+  if (elements.length === 1) {
+    return elements[0].text;
+  }
+
+  // Multiple elements: format as structured Markdown with element headings
+  return elements.map((e) => `## ${e.id}\n\n${e.text}`).join('\n\n');
+}
+
+/**
+ * Replace the <sktd:text> body of a <sktd:docu> envelope with base64(markdown),
+ * preserving all other attributes and elements (responsible, packageRef, refObject, etc.).
+ *
+ * The returned XML is suitable for a PUT to the KTD object URL with
+ * content-type `application/vnd.sap.adt.sktdv2+xml`.
+ */
+export function rewriteKtdText(envelopeXml: string, markdown: string): string {
+  const base64 = Buffer.from(markdown, 'utf-8').toString('base64');
+  const textPattern = /(<sktd:text[^>]*>)([\s\S]*?)(<\/sktd:text>)/;
+  if (textPattern.test(envelopeXml)) {
+    return envelopeXml.replace(textPattern, `$1${base64}$3`);
+  }
+  // Self-closing form: <sktd:text ... /> (rare but possible on an empty KTD)
+  const selfClosing = /<sktd:text([^>]*)\/>/;
+  if (selfClosing.test(envelopeXml)) {
+    return envelopeXml.replace(selfClosing, `<sktd:text$1>${base64}</sktd:text>`);
+  }
+  throw new Error('KTD envelope missing <sktd:text> element — cannot update documentation body.');
+}
