@@ -219,6 +219,7 @@ tests/
 | Add contract extraction for new type | `src/context/contract.ts` |
 | Modify context output format | `src/context/compressor.ts` |
 | Add runtime diagnostic | `src/adt/diagnostics.ts`, `src/handlers/intent.ts` |
+| NW 7.50 dump detail (custom endpoint) | `src/adt/diagnostics.ts` (custom endpoint section: `useCustomDumpEndpoint`, `listDumpsViaCustomEndpoint`, `getDumpViaCustomEndpoint`), `src/handlers/intent.ts` (passes `abapRelease` to `listDumps`/`getDump`), `src/cli.ts` (probes features before first CLI tool call). ABAP side: `ZCL_ARC1_DUMP_HANDLER` (ICF handler at `/sap/rest/arc1/dumps`). |
 | Add audit logging | `src/server/audit.ts`, `src/server/sinks/` |
 | Add audit event type | `src/server/audit.ts` (typed `*Event` interface + `AuditEvent` union); emit via `logger.emitAudit({...})` from the call site (e.g. `confirmPreaudit` in `src/adt/devtools.ts`) |
 | Add CLI sub-command (`call`, `tools`, shortcuts) | `src/cli.ts` (Commander wiring), `src/cli-args.ts` (pure arg parsing helpers + tests in `tests/unit/cli/cli-args.test.ts`) — never duplicate Zod validation; `handleToolCall` does it |
@@ -341,6 +342,19 @@ When `ppEnabled=true`, the user's JWT is used to get a per-user SAP session via 
 ### Important: POST Needed for Read Operations
 
 9+ "read" endpoints use HTTP POST: code intelligence (findDefinition, findWhereUsed, getCompletion), syntax check, unit tests, ATC, quickfix proposal evaluation/apply-delta, table preview. A read-only SAP user needs `S_ADT_RES ACTVT=01 AND 02`.
+
+### NW 7.50: Custom Dump Detail Endpoint
+
+SAP NW 7.50 provides the dump listing feed (`/sap/bc/adt/runtime/dumps`) through the generic ADT feed framework (`CL_SABP_RABAX_ADT_RES_DUMPS` → `IF_ADT_FEED_PROVIDER`), but **no REST endpoint** for individual dump detail. The standard ADT detail endpoint (`/sap/bc/adt/runtime/dump/{id}`) was introduced in later releases. On 7.50, dump "detail" in Eclipse opens ST22 via SAP GUI integration (`IF_ADT_GUI_INTEGRATION`), not a REST call.
+
+ARC-1 fills this gap with `ZCL_ARC1_DUMP_HANDLER`, a custom ICF handler deployed at `/sap/rest/arc1/dumps`:
+
+- **List**: `GET /sap/rest/arc1/dumps` → JSON array from `SNAP_ADT`
+- **Detail**: `GET /sap/rest/arc1/dumps/{datum;uzeit;ahost;uname;mandt;modno}` → structured JSON via `RS_ST22_GET_FT` (FT field parsing, same ID codes as `CL_WD_TRACE_TOOL_ABAP_UTIL`) + `RS_ST22_READ_SNAPT` (texts) + `READ REPORT` (source ±10 lines) + `/UI2/CL_JSON` serialization
+
+**Routing**: when `abapRelease` = 750, `listDumps()` and `getDump()` route directly to the custom endpoint. On other releases the standard ADT endpoints are used. `getDump()` also falls back to the custom endpoint on ADT 404 as a safety net.
+
+**Dump ID format**: semicolon-delimited key fields (e.g., `20260422;225839;cdsci_CDS_10;LRO262;040;16`) instead of the 71-char fixed-width padded format used by the ADT feed.
 
 ## Code Patterns
 

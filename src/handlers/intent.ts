@@ -4183,7 +4183,7 @@ async function handleSAPDiagnose(client: AdtClient, args: Record<string, unknown
     case 'dumps': {
       const id = args.id as string | undefined;
       if (id) {
-        const detail = await getDump(client.http, client.safety, id);
+        const detail = await getDump(client.http, client.safety, id, cachedFeatures?.abapRelease);
         const includeFullText = args.includeFullText === true || String(args.includeFullText ?? '') === 'true';
         const selectedSections = selectDumpSections(detail, args.sections);
 
@@ -4212,7 +4212,7 @@ async function handleSAPDiagnose(client: AdtClient, args: Record<string, unknown
 
       const user = args.user as string | undefined;
       const maxResults = args.maxResults ? Number(args.maxResults) : undefined;
-      const dumps = await listDumps(client.http, client.safety, { user, maxResults });
+      const dumps = await listDumps(client.http, client.safety, { user, maxResults }, cachedFeatures?.abapRelease);
       return textResult(JSON.stringify(dumps, null, 2));
     }
     case 'traces': {

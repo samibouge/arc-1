@@ -22,8 +22,10 @@ import { Command, Option } from 'commander';
 import { config } from 'dotenv';
 import { AdtClient } from './adt/client.js';
 import type { AdtClientConfig } from './adt/config.js';
+import { defaultFeatureConfig } from './adt/config.js';
+import { probeFeatures } from './adt/features.js';
 import { buildArgs, type OutputMode } from './cli-args.js';
-import { handleToolCall, type ToolResult } from './handlers/intent.js';
+import { getCachedFeatures, handleToolCall, setCachedFeatures, type ToolResult } from './handlers/intent.js';
 import { getToolDefinitions } from './handlers/tools.js';
 import { detectFilename, lintAbapSource } from './lint/lint.js';
 import { parseArgs, resolveConfig } from './server/config.js';
@@ -307,6 +309,15 @@ async function runToolCall(toolName: string, args: Record<string, unknown>, outp
     console.error(`Unknown tool: ${toolName}`);
     console.error(`Available tools: ${[...available].join(', ')}`);
     return 2;
+  }
+  // Probe features once so abapRelease is available for release-gated behavior
+  if (!getCachedFeatures()) {
+    try {
+      const features = await probeFeatures(client.http, defaultFeatureConfig(), serverConfig.systemType);
+      setCachedFeatures(features);
+    } catch {
+      // probe failed — continue without features
+    }
   }
   try {
     const result = await handleToolCall(client, serverConfig, toolName, args);

@@ -8,6 +8,7 @@
  * Follows the same pure-function pattern as devtools.ts.
  */
 
+import { AdtApiError } from './errors.js';
 import type { AdtHttpClient } from './http.js';
 import { checkOperation, OperationType, type SafetyConfig } from './safety.js';
 import type {
@@ -63,8 +64,17 @@ export async function listDumps(
   http: AdtHttpClient,
   safety: SafetyConfig,
   options?: ListDumpsOptions,
+  abapRelease?: string,
 ): Promise<DumpEntry[]> {
   checkOperation(safety, OperationType.Read, 'ListDumps');
+
+  if (useCustomDumpEndpoint(abapRelease)) {
+    try {
+      return await listDumpsViaCustomEndpoint(http);
+    } catch {
+      // custom endpoint not deployed — fall through to ADT feed
+    }
+  }
 
   const queryString = buildFeedQueryString(options, DEFAULT_DUMP_MAX_RESULTS, 'user');
   const resp = await http.get(`/sap/bc/adt/runtime/dumps${queryString}`, {
@@ -83,20 +93,34 @@ export async function listDumps(
  *
  * The dump ID is the URL-encoded path segment from the listing.
  */
-export async function getDump(http: AdtHttpClient, safety: SafetyConfig, dumpId: string): Promise<DumpDetail> {
+export async function getDump(
+  http: AdtHttpClient,
+  safety: SafetyConfig,
+  dumpId: string,
+  abapRelease?: string,
+): Promise<DumpDetail> {
   checkOperation(safety, OperationType.Read, 'GetDump');
 
-  // Fetch XML metadata and formatted text in parallel
-  const [xmlResp, textResp] = await Promise.all([
-    http.get(`/sap/bc/adt/runtime/dump/${dumpId}`, {
-      Accept: 'application/vnd.sap.adt.runtime.dump.v1+xml',
-    }),
-    http.get(`/sap/bc/adt/runtime/dump/${dumpId}/formatted`, {
-      Accept: 'text/plain',
-    }),
-  ]);
+  if (useCustomDumpEndpoint(abapRelease)) {
+    return getDumpViaCustomEndpoint(http, dumpId);
+  }
 
-  return parseDumpDetail(xmlResp.body, textResp.body, dumpId);
+  const id = normalizeDumpId(dumpId);
+  try {
+    const [xmlResp, textResp] = await Promise.all([
+      http.get(`/sap/bc/adt/runtime/dump/${id}`, {
+        Accept: 'application/vnd.sap.adt.runtime.dump.v1+xml',
+      }),
+      http.get(`/sap/bc/adt/runtime/dump/${id}/formatted`, {
+        Accept: 'text/plain',
+      }),
+    ]);
+    return parseDumpDetail(xmlResp.body, textResp.body, id);
+  } catch (err) {
+    if (!(err instanceof AdtApiError && err.statusCode === 404)) throw err;
+    // ADT detail endpoint missing (NW 7.50) — try custom endpoint as fallback
+    return getDumpViaCustomEndpoint(http, dumpId);
+  }
 }
 
 // ─── System Messages + Gateway Errors ──────────────────────────────
@@ -632,6 +656,117 @@ export function parseTraceDbAccesses(xml: string): TraceDbAccess[] {
     }));
 }
 
+// ─── NW 7.50 custom dump endpoint ──────────────────────────────────
+//
+// SAP NW 7.50 provides the dump listing feed (/sap/bc/adt/runtime/dumps)
+// through the generic ADT feed framework (CL_SABP_RABAX_ADT_RES_DUMPS),
+// but has NO REST endpoint for individual dump detail — the standard ADT
+// detail endpoint (/sap/bc/adt/runtime/dump/{id}) was introduced in later
+// releases. On 7.50, dump "detail" in ADT/Eclipse opens ST22 via SAP GUI
+// integration (IF_ADT_GUI_INTEGRATION), not a REST call.
+//
+// To fill this gap, the custom ICF handler ZCL_ARC1_DUMP_HANDLER provides:
+//
+//   GET /sap/rest/arc1/dumps          → JSON list of recent dumps (from SNAP_ADT)
+//   GET /sap/rest/arc1/dumps/{id}     → structured dump detail:
+//     - Header: error_id, exception, tcode, user, client, server, component
+//     - Texts:  shortText, explanation, description, hints (via RS_ST22_READ_SNAPT)
+//     - FT parsing: main/current program, include, line, stack, env, EPP
+//       (same FT ID codes as CL_WD_TRACE_TOOL_ABAP_UTIL)
+//     - Source: ±10 lines around the abort line (via READ REPORT)
+//     - Serialized via /UI2/CL_JSON
+//
+// Dump IDs use semicolon-delimited format: datum;uzeit;ahost;uname;mandt;modno
+// (e.g. "20260422;225839;cdsci_CDS_10;LRO262;040;16")
+//
+// Routing: when abapRelease is 750, both listDumps() and getDump() route to
+// the custom endpoint. On other releases the standard ADT endpoints are used.
+// getDump() also falls back to the custom endpoint on ADT 404 (regardless of
+// release) as a safety net.
+//
+// Deployment: create ZCL_ARC1_DUMP_HANDLER (IF_HTTP_EXTENSION), register in
+// SICF at /sap/rest/arc1/dumps, activate the service node.
+
+const CUSTOM_DUMP_ENDPOINT = '/sap/rest/arc1/dumps';
+
+function useCustomDumpEndpoint(abapRelease?: string): boolean {
+  if (!abapRelease) return false;
+  const r = abapRelease.replace(/\D/g, '');
+  const num = Number.parseInt(r, 10);
+  return Number.isFinite(num) && num >= 750 && num < 751;
+}
+
+async function listDumpsViaCustomEndpoint(http: AdtHttpClient): Promise<DumpEntry[]> {
+  const resp = await http.get(CUSTOM_DUMP_ENDPOINT, { Accept: 'application/json' });
+  const entries = JSON.parse(resp.body) as Array<Record<string, unknown>>;
+  return entries.map((e) => ({
+    id: String(e.id ?? ''),
+    timestamp: String(e.timestamp ?? ''),
+    user: String(e.user ?? '').trim(),
+    error: String(e.error ?? '').trim(),
+    program: String(e.program ?? '').trim(),
+  }));
+}
+
+async function getDumpViaCustomEndpoint(http: AdtHttpClient, dumpId: string): Promise<DumpDetail> {
+  const resp = await http.get(`${CUSTOM_DUMP_ENDPOINT}/${encodeURIComponent(dumpId)}`, {
+    Accept: 'application/json',
+  });
+
+  const data = JSON.parse(resp.body) as Record<string, unknown>;
+  if (!data.id && data.error) {
+    throw new AdtApiError(String(data.error), 404, CUSTOM_DUMP_ENDPOINT);
+  }
+
+  const timestamp = String(data.timestamp ?? '');
+
+  const sections: Record<string, string> = {};
+  const shortText = String(data.shortText ?? '');
+  const explanation = String(data.explanation ?? '');
+  const description = String(data.description ?? '');
+  const hints = String(data.hints ?? '');
+  const correctionHints = String(data.correctionHints ?? '');
+  if (shortText) sections.shortText = shortText;
+  if (explanation) sections.explanation = explanation;
+  if (description) sections.description = description;
+  if (hints) sections.hints = hints;
+  if (correctionHints) sections.correctionHints = correctionHints;
+
+  // Build source code section from abapSource array
+  const abapSource = data.abapSource as Array<{ line: number; source: string }> | undefined;
+  if (abapSource?.length) {
+    sections.sourceCode = abapSource.map((s) => `${String(s.line).padStart(6)} ${s.source}`).join('\n');
+  }
+
+  // Build stack section from abapStack array
+  const abapStack = data.abapStack as Array<Record<string, string>> | undefined;
+  if (abapStack?.length) {
+    sections.callStack = abapStack
+      .map(
+        (s) =>
+          `${(s.eventname ?? s.event ?? '').trim()} in ${(s.programm ?? '').trim()} include ${(s.include ?? '').trim()} line ${(s.line ?? '').trim()}`,
+      )
+      .join('\n');
+  }
+
+  const formattedText = Object.entries(sections)
+    .map(([key, val]) => `--- ${key} ---\n${val}`)
+    .join('\n\n');
+
+  return {
+    id: dumpId,
+    error: String(data.errorId ?? ''),
+    exception: String(data.exception ?? ''),
+    program: String(data.currentProgram ?? data.mainProgram ?? ''),
+    user: String(data.user ?? ''),
+    timestamp,
+    chapters: [],
+    formattedText,
+    sections,
+    terminationUri: undefined,
+  };
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────
 
 function buildFeedQueryString(
@@ -721,6 +856,15 @@ function extractDumpId(entry: Record<string, unknown>): string {
   const serialized = JSON.stringify(entry);
   const fallback = serialized.match(/\/runtime\/dumps?\/([^"\\\s<]+)/)?.[1] ?? '';
   return fallback.trim();
+}
+
+/**
+ * NW 7.50 returns fixed-width padded dump IDs with spaces (or %20-encoded).
+ * The detail endpoint expects the compact form without padding.
+ */
+function normalizeDumpId(id: string): string {
+  const decoded = decodeUriComponentSafe(id);
+  return decoded.replace(/\s+/g, '');
 }
 
 function extractIdFromPath(rawPath: string, markers: string[]): string {
