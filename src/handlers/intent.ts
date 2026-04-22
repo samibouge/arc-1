@@ -3777,7 +3777,7 @@ async function handleSAPActivate(client: AdtClient, args: Record<string, unknown
   // Single activation (existing behavior)
   const objectUrl = objectUrlForType(type, name);
 
-  const result = await activate(client.http, client.safety, objectUrl, activateOpts);
+  const result = await activate(client.http, client.safety, objectUrl, { ...activateOpts, name });
 
   if (result.success) {
     return textResult(`Successfully activated ${type} ${name}.${formatActivationMessages(result)}`);

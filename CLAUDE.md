@@ -103,6 +103,8 @@ Copy `.env.example` to `.env` for local development. All config options are defi
 | `SAP_PP_STRICT` / `--pp-strict` | PP failure = error, no fallback to shared client (default: false) |
 | `SAP_PP_ALLOW_SHARED_COOKIES` / `--pp-allow-shared-cookies` | Opt-in escape hatch allowing `SAP_COOKIE_FILE`/`SAP_COOKIE_STRING` to coexist with `SAP_PP_ENABLED`. Cookies stay on shared client only. (default: false) |
 | `SAP_DISABLE_SAML` / `--disable-saml` | Opt-in: disable SAML redirect via `X-SAP-SAML2: disabled` + `?saml2=disabled`. Do NOT use on BTP ABAP or S/4 Public Cloud. (default: false) |
+| `ARC1_PROFILE` / `--profile` | Safety profile shortcut: `viewer`, `viewer-data`, `viewer-sql`, `developer`, `developer-data`, `developer-sql` |
+| `ARC1_LOG_HTTP_DEBUG` | Opt-in: attach full request/response bodies and headers to `http_request` audit events (default: false). Sensitive headers redacted, bodies truncated at 64KB. Not for production. |
 
 ## Codebase Structure
 

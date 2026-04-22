@@ -5,6 +5,7 @@ import {
   applyFixProposal,
   getFixProposals,
   getPrettyPrinterSettings,
+  parseActivationOutcome,
   parseActivationResult,
   prettyPrint,
   publishServiceBinding,
@@ -503,6 +504,213 @@ describe('DevTools', () => {
       await expect(
         activateBatch(http, safety, [{ url: '/sap/bc/adt/programs/programs/ZTEST', name: 'ZTEST' }]),
       ).rejects.toThrow(AdtSafetyError);
+    });
+  });
+
+  // ─── preaudit handshake ────────────────────────────────────────────
+
+  describe('preaudit handshake', () => {
+    // Real NW 7.50 response shape — SAP returns inactive objects with transport info
+    const preauditXml = `<?xml version="1.0" encoding="utf-8"?>
+<ioc:inactiveObjects xmlns:ioc="http://www.sap.com/abapxml/inactiveCtsObjects">
+  <ioc:entry>
+    <ioc:object/>
+    <ioc:transport ioc:user="TESTUSER" ioc:linked="false">
+      <ioc:ref adtcore:uri="/sap/bc/adt/vit/wb/object_type/%20%20%20%20rq/object_name/TRKORR001"
+        adtcore:type="/RQ" adtcore:name="TRKORR001" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </ioc:transport>
+  </ioc:entry>
+  <ioc:entry>
+    <ioc:object ioc:user="" ioc:deleted="false">
+      <ioc:ref adtcore:uri="/sap/bc/adt/oo/classes/zcl_test"
+        adtcore:type="CLAS/OC" adtcore:name="ZCL_TEST" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </ioc:object>
+    <ioc:transport/>
+  </ioc:entry>
+  <ioc:entry>
+    <ioc:object ioc:user="" ioc:deleted="false">
+      <ioc:ref adtcore:uri="/sap/bc/adt/oo/classes/zcl_test/source/main#type=CLAS%2FOM;name=SOME_METHOD"
+        adtcore:type="CLAS/OM/public" adtcore:name="ZCL_TEST         SOME_METHOD"
+        adtcore:parentUri="/sap/bc/adt/oo/classes/zcl_test" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </ioc:object>
+    <ioc:transport ioc:user="TESTUSER" ioc:linked="true">
+      <ioc:ref adtcore:uri="/sap/bc/adt/vit/wb/object_type/%20%20%20%20rq/object_name/TRKORR002"
+        adtcore:type="/RQ" adtcore:name="TRKORR002" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </ioc:transport>
+  </ioc:entry>
+</ioc:inactiveObjects>`;
+
+    function mockHttpSequence(...responses: string[]): AdtHttpClient {
+      const post = vi.fn();
+      for (const body of responses) {
+        post.mockResolvedValueOnce({ statusCode: 200, headers: {}, body });
+      }
+      return {
+        get: vi.fn().mockResolvedValue({ statusCode: 200, headers: {}, body: '' }),
+        post,
+        put: vi.fn().mockResolvedValue({ statusCode: 200, headers: {}, body: '' }),
+        delete: vi.fn().mockResolvedValue({ statusCode: 200, headers: {}, body: '' }),
+        fetchCsrfToken: vi.fn(),
+        withStatefulSession: vi.fn(),
+      } as unknown as AdtHttpClient;
+    }
+
+    describe('parseActivationOutcome', () => {
+      it('returns success for empty body', () => {
+        const outcome = parseActivationOutcome('');
+        expect(outcome.kind).toBe('success');
+      });
+
+      it('returns error for <msg> with severity=error', () => {
+        const xml = '<messages><msg severity="error" shortText="Type error"/></messages>';
+        const outcome = parseActivationOutcome(xml);
+        expect(outcome.kind).toBe('error');
+        expect(outcome.messages).toContain('Type error');
+      });
+
+      it('returns preaudit for <ioc:inactiveObjects> with no <msg> errors', () => {
+        const outcome = parseActivationOutcome(preauditXml);
+        expect(outcome.kind).toBe('preaudit');
+        if (outcome.kind !== 'preaudit') return;
+        expect(outcome.refs).toHaveLength(2);
+        expect(outcome.refs[0]!.name).toBe('ZCL_TEST');
+        expect(outcome.refs[0]!.uri).toBe('/sap/bc/adt/oo/classes/zcl_test');
+        expect(outcome.refs[1]!.name).toBe('ZCL_TEST         SOME_METHOD');
+        expect(outcome.refs[1]!.uri).toContain('SOME_METHOD');
+      });
+
+      it('skips transport-only entries (empty <ioc:object/>) in preaudit refs', () => {
+        const outcome = parseActivationOutcome(preauditXml);
+        if (outcome.kind !== 'preaudit') return;
+        const uris = outcome.refs.map((r) => r.uri);
+        expect(uris.every((u) => !u.includes('object_type'))).toBe(true);
+      });
+
+      it('returns error (not preaudit) when <msg> errors AND <ioc:inactiveObjects> both present', () => {
+        const xml = `<root>
+          <msg type="E" shortText="Compile error"/>
+          <ioc:inactiveObjects xmlns:ioc="http://www.sap.com/abapxml/inactiveCtsObjects">
+            <ioc:entry><ioc:object ioc:user="">
+              <ioc:ref adtcore:uri="/sap/bc/adt/oo/classes/zcl_test" adtcore:name="ZCL_TEST"
+                xmlns:adtcore="http://www.sap.com/adt/core"/>
+            </ioc:object><ioc:transport/></ioc:entry>
+          </ioc:inactiveObjects>
+        </root>`;
+        const outcome = parseActivationOutcome(xml);
+        expect(outcome.kind).toBe('error');
+      });
+    });
+
+    describe('parseActivationResult backward compat', () => {
+      it('treats preaudit as failure with "still inactive" messages', () => {
+        const result = parseActivationResult(preauditXml);
+        expect(result.success).toBe(false);
+        expect(result.messages.some((m) => m.includes('still inactive'))).toBe(true);
+      });
+    });
+
+    describe('activate() two-step handshake', () => {
+      it('completes activation when preaudit returns inactive objects then second call succeeds', async () => {
+        const http = mockHttpSequence(preauditXml, '');
+        const result = await activate(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST', {
+          name: 'ZCL_TEST',
+        });
+
+        expect(result.success).toBe(true);
+        expect(http.post).toHaveBeenCalledTimes(2);
+
+        // First call: preauditRequested=true
+        const firstCall = (http.post as any).mock.calls[0];
+        expect(firstCall[0]).toContain('preauditRequested=true');
+
+        // Second call: preauditRequested=false with both refs
+        const secondCall = (http.post as any).mock.calls[1];
+        expect(secondCall[0]).toBe('/sap/bc/adt/activation?method=activate&preauditRequested=false');
+        const secondBody = secondCall[1] as string;
+        expect(secondBody).toContain('adtcore:uri="/sap/bc/adt/oo/classes/zcl_test"');
+        expect(secondBody).toContain('SOME_METHOD');
+        expect(secondBody).toContain('adtcore:name="ZCL_TEST"');
+      });
+
+      it('returns error directly when first call has <msg> errors (no second call)', async () => {
+        const errorXml = '<messages><msg type="E" shortText="Syntax error line 5"/></messages>';
+        const http = mockHttpSequence(errorXml);
+        const result = await activate(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST');
+
+        expect(result.success).toBe(false);
+        expect(result.messages).toContain('Syntax error line 5');
+        expect(http.post).toHaveBeenCalledTimes(1);
+      });
+
+      it('returns success directly when first call returns empty body (no preaudit needed)', async () => {
+        const http = mockHttpSequence('');
+        const result = await activate(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST');
+
+        expect(result.success).toBe(true);
+        expect(http.post).toHaveBeenCalledTimes(1);
+      });
+
+      it('returns error when second call also returns preaudit (avoids infinite loop)', async () => {
+        const http = mockHttpSequence(preauditXml, preauditXml);
+        const result = await activate(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST');
+
+        expect(result.success).toBe(false);
+        expect(http.post).toHaveBeenCalledTimes(2);
+        expect(result.messages.some((m) => m.includes('still inactive'))).toBe(true);
+      });
+
+      it('returns error when second call returns <msg> errors', async () => {
+        const errorXml = '<messages><msg type="E" shortText="Activation dependency unresolved"/></messages>';
+        const http = mockHttpSequence(preauditXml, errorXml);
+        const result = await activate(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST');
+
+        expect(result.success).toBe(false);
+        expect(result.messages).toContain('Activation dependency unresolved');
+        expect(http.post).toHaveBeenCalledTimes(2);
+      });
+
+      it('skips handshake when preaudit=false (single call)', async () => {
+        const http = mockHttpSequence(preauditXml);
+        const result = await activate(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST', {
+          preaudit: false,
+        });
+
+        expect(result.success).toBe(false);
+        expect(http.post).toHaveBeenCalledTimes(1);
+      });
+
+      it('includes adtcore:name in request body when name option provided', async () => {
+        const http = mockHttpSequence('');
+        await activate(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST', { name: 'ZCL_TEST' });
+
+        const body = (http.post as any).mock.calls[0][1] as string;
+        expect(body).toContain('adtcore:name="ZCL_TEST"');
+      });
+    });
+
+    describe('activateBatch() two-step handshake', () => {
+      it('completes activation when preaudit returns inactive objects then second call succeeds', async () => {
+        const http = mockHttpSequence(preauditXml, '');
+        const result = await activateBatch(http, unrestrictedSafetyConfig(), [
+          { url: '/sap/bc/adt/oo/classes/ZCL_TEST', name: 'ZCL_TEST' },
+        ]);
+
+        expect(result.success).toBe(true);
+        expect(http.post).toHaveBeenCalledTimes(2);
+        const secondCall = (http.post as any).mock.calls[1];
+        expect(secondCall[0]).toContain('preauditRequested=false');
+      });
+
+      it('returns error directly when first call has <msg> errors (no second call)', async () => {
+        const errorXml = '<messages><msg type="E" shortText="Batch error"/></messages>';
+        const http = mockHttpSequence(errorXml);
+        const result = await activateBatch(http, unrestrictedSafetyConfig(), [
+          { url: '/sap/bc/adt/ddic/ddl/sources/ZI_TRAVEL', name: 'ZI_TRAVEL' },
+        ]);
+
+        expect(result.success).toBe(false);
+        expect(http.post).toHaveBeenCalledTimes(1);
+      });
     });
   });
 

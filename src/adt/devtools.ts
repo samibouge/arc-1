@@ -8,6 +8,7 @@
  * - RunATCCheck: ABAP Test Cockpit (code quality)
  */
 
+import { logger } from '../server/logger.js';
 import { AdtApiError } from './errors.js';
 import type { AdtHttpClient } from './http.js';
 import { checkOperation, OperationType, type SafetyConfig } from './safety.js';
@@ -133,31 +134,44 @@ export interface ActivationResult {
   details: ActivationMessage[];
 }
 
-/** Activate (publish) ABAP objects */
+/** Activate (publish) ABAP objects.
+ *
+ *  Implements the ADT preaudit handshake: the first POST with preauditRequested=true
+ *  may return an <ioc:inactiveObjects> prompt listing related objects that must be
+ *  included. When that happens, a second POST with the full list and preauditRequested=false
+ *  commits the activation. */
 export async function activate(
   http: AdtHttpClient,
   safety: SafetyConfig,
   objectUrl: string,
-  options?: { preaudit?: boolean },
+  options?: { preaudit?: boolean; name?: string },
 ): Promise<ActivationResult> {
   checkOperation(safety, OperationType.Activate, 'Activate');
 
-  const preaudit = options?.preaudit !== false;
-  const body = `<?xml version="1.0" encoding="UTF-8"?>
+  try {
+    const preaudit = options?.preaudit !== false;
+    const nameAttr = options?.name ? ` adtcore:name="${escapeXmlAttr(options.name)}"` : '';
+    const body = `<?xml version="1.0" encoding="UTF-8"?>
 <adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
-  <adtcore:objectReference adtcore:uri="${escapeXmlAttr(objectUrl)}"/>
+  <adtcore:objectReference adtcore:uri="${escapeXmlAttr(objectUrl)}"${nameAttr}/>
 </adtcore:objectReferences>`;
 
-  // Use application/* wildcard for Content-Type — matches how ADT Eclipse
-  // and abap-adt-api send activation requests. More resilient across SAP versions.
-  const resp = await http.post(
-    `/sap/bc/adt/activation?method=activate&preauditRequested=${preaudit}`,
-    body,
-    'application/*',
-    { Accept: 'application/xml' },
-  );
+    const resp = await http.post(
+      `/sap/bc/adt/activation?method=activate&preauditRequested=${preaudit}`,
+      body,
+      'application/*',
+      { Accept: 'application/xml' },
+    );
 
-  return parseActivationResult(resp.body);
+    const outcome = parseActivationOutcome(resp.body);
+    if (outcome.kind !== 'preaudit' || !preaudit) {
+      return outcomeToResult(outcome);
+    }
+
+    return confirmPreaudit(http, outcome.refs);
+  } catch (err) {
+    return rethrowOrLockHint(err, options?.name ?? objectUrl);
+  }
 }
 
 /**
@@ -188,14 +202,98 @@ export async function activateBatch(
 ${refs}
 </adtcore:objectReferences>`;
 
+  try {
+    const resp = await http.post(
+      `/sap/bc/adt/activation?method=activate&preauditRequested=${preaudit}`,
+      body,
+      'application/*',
+      { Accept: 'application/xml' },
+    );
+
+    const outcome = parseActivationOutcome(resp.body);
+    if (outcome.kind !== 'preaudit' || !preaudit) {
+      return outcomeToResult(outcome);
+    }
+
+    return confirmPreaudit(http, outcome.refs);
+  } catch (err) {
+    return rethrowOrLockHint(err, objects.map((o) => o.name).join(', '));
+  }
+}
+
+/** Second POST of the preaudit handshake: send the full object list with preauditRequested=false. */
+async function confirmPreaudit(
+  http: AdtHttpClient,
+  refs: Array<{ uri: string; name: string }>,
+): Promise<ActivationResult> {
+  logger.debug('Activation preaudit: SAP returned inactive objects, confirming with preauditRequested=false', {
+    count: refs.length,
+    objects: refs.map((r) => ({ name: r.name, uri: r.uri })),
+  });
+  const refLines = refs
+    .map(
+      (r) =>
+        `  <adtcore:objectReference adtcore:uri="${escapeXmlAttr(r.uri)}" adtcore:name="${escapeXmlAttr(r.name)}"/>`,
+    )
+    .join('\n');
+
+  const body = `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+${refLines}
+</adtcore:objectReferences>`;
+
   const resp = await http.post(
-    `/sap/bc/adt/activation?method=activate&preauditRequested=${preaudit}`,
+    '/sap/bc/adt/activation?method=activate&preauditRequested=false',
     body,
     'application/*',
     { Accept: 'application/xml' },
   );
 
-  return parseActivationResult(resp.body);
+  const outcome = parseActivationOutcome(resp.body);
+  return outcomeToResult(outcome);
+}
+
+// NW 7.50 lock-conflict-as-auth-error quirk:
+// The activation handler raises CX_ADT_RES_NO_ACCESS (→ 403) for lock conflicts.
+// With cookie auth (no Basic Auth header), ICM transforms 403 → 401 "no logon data".
+// ARC-1's 401 retry handler then clears cookies and retries → 400.
+// So we see 400, 401, or 403 depending on timing — all with the same HTML login page.
+// Other ADT endpoints work fine with the same session. Detected by matching
+// "Logon Error Message" in the HTML body on the activation path.
+function rethrowOrLockHint(err: unknown, objectLabel: string): never | ActivationResult {
+  if (
+    err instanceof AdtApiError &&
+    (err.statusCode === 400 || err.statusCode === 401 || err.statusCode === 403) &&
+    err.responseBody?.includes('Logon Error Message')
+  ) {
+    logger.debug(`Activation ${err.statusCode} interpreted as lock conflict (NW 7.50 CX_ADT_RES_NO_ACCESS quirk)`, {
+      object: objectLabel,
+      path: err.path,
+    });
+    return {
+      success: false,
+      messages: [
+        `Object ${objectLabel} is locked by another session. Close the editor (Eclipse, SE80) or release the lock in SM12, then retry activation.`,
+      ],
+      details: [{ severity: 'error', text: `Object ${objectLabel} is locked by another session.` }],
+    };
+  }
+  throw err;
+}
+
+function outcomeToResult(outcome: ActivationOutcome): ActivationResult {
+  if (outcome.kind === 'preaudit') {
+    const messages = [...outcome.messages];
+    const details = [...outcome.details];
+    for (const ref of outcome.refs) {
+      const label = ref.name || 'object';
+      const text = `Activation did not complete — ${label} is still inactive.`;
+      messages.push(text);
+      details.push({ severity: 'error', text, uri: ref.uri });
+    }
+    return { success: false, messages, details };
+  }
+  return { success: outcome.kind === 'success', messages: outcome.messages, details: outcome.details };
 }
 
 /** Result of a publish/unpublish operation */
@@ -431,9 +529,20 @@ export interface AtcFinding {
   hasQuickfix?: boolean;
 }
 
-/** Parse activation response XML to detect errors via proper XML parsing */
-export function parseActivationResult(xml: string): ActivationResult {
-  if (!xml.trim()) return { success: true, messages: [], details: [] };
+/** Discriminated outcome from parsing an activation response. */
+export type ActivationOutcome =
+  | { kind: 'success'; messages: string[]; details: ActivationMessage[] }
+  | { kind: 'error'; messages: string[]; details: ActivationMessage[] }
+  | {
+      kind: 'preaudit';
+      refs: Array<{ uri: string; name: string }>;
+      messages: string[];
+      details: ActivationMessage[];
+    };
+
+/** Parse activation response into a discriminated outcome. */
+export function parseActivationOutcome(xml: string): ActivationOutcome {
+  if (!xml.trim()) return { kind: 'success', messages: [], details: [] };
 
   const parsed = parseXml(xml);
   const msgs = findDeepNodes(parsed, 'msg');
@@ -467,27 +576,39 @@ export function parseActivationResult(xml: string): ActivationResult {
     details.push(detail);
   }
 
-  // SAP also returns <ioc:inactiveObjects> on some activation calls — a preaudit/dry-run
-  // shape that lists what is still inactive (and which transport/user owns it). With no
-  // <msg> errors this would otherwise parse as success; treat any entry that carries an
-  // <object> child ref as a failure so phantom "Successfully activated" responses stop.
-  if (!hasErrors) {
-    const inactive = extractInactiveObjectEntries(parsed);
-    if (inactive.length > 0) {
-      hasErrors = true;
-      for (const ref of inactive) {
-        const ownerSuffix = ref.user ? ` (pending changes owned by ${ref.user})` : '';
-        const label = ref.name || 'object';
-        const text = `Activation did not complete — ${label} is still inactive${ownerSuffix}.`;
-        messages.push(text);
-        const detail: ActivationMessage = { severity: 'error', text };
-        if (ref.uri) detail.uri = ref.uri;
-        details.push(detail);
-      }
-    }
+  if (hasErrors) return { kind: 'error', messages, details };
+
+  // <ioc:inactiveObjects> with no <msg> errors = preaudit prompt.
+  // SAP lists the related inactive objects and asks the client to confirm.
+  const inactive = extractInactiveObjectEntries(parsed);
+  if (inactive.length > 0) {
+    return {
+      kind: 'preaudit',
+      refs: inactive.map((r) => ({ uri: r.uri, name: r.name })),
+      messages,
+      details,
+    };
   }
 
-  return { success: !hasErrors, messages, details };
+  return { kind: 'success', messages, details };
+}
+
+/** Parse activation response XML to detect errors via proper XML parsing.
+ *  Treats preaudit prompts as errors — use parseActivationOutcome for handshake support. */
+export function parseActivationResult(xml: string): ActivationResult {
+  const outcome = parseActivationOutcome(xml);
+  if (outcome.kind === 'preaudit') {
+    const messages = [...outcome.messages];
+    const details = [...outcome.details];
+    for (const ref of outcome.refs) {
+      const label = ref.name || 'object';
+      const text = `Activation did not complete — ${label} is still inactive.`;
+      messages.push(text);
+      details.push({ severity: 'error', text, uri: ref.uri });
+    }
+    return { success: false, messages, details };
+  }
+  return { success: outcome.kind === 'success', messages: outcome.messages, details: outcome.details };
 }
 
 /** Extract still-inactive object refs from an <ioc:inactiveObjects> response.
