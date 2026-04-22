@@ -2648,6 +2648,17 @@ async function handleSAPWrite(
     return errorResult('"type" and "name" are required for this action.');
   }
 
+  // SAP object names must be uppercase — mixed-case names cause silent corruption
+  // (e.g. DDLS created as "Zc_MyView" instead of "ZC_MYVIEW" confuses the TADIR registry).
+  // Note: source code inside the object CAN use mixed case (e.g. "define view ZC_MyView").
+  if (action === 'create' && name && name !== name.toUpperCase()) {
+    return errorResult(
+      `Object name "${name}" contains lowercase characters. SAP object names must be uppercase (e.g. "${name.toUpperCase()}").\n\n` +
+        `Note: the object NAME in TADIR must be uppercase, but the source code inside the object can use mixed case ` +
+        `(e.g. for DDLS: name="${name.toUpperCase()}" but source can contain "define view entity ${name}").`,
+    );
+  }
+
   const objectUrl = objectUrlForType(type, name);
   const srcUrl = sourceUrlForType(type, name);
 
@@ -3294,6 +3305,16 @@ async function handleSAPWrite(
         const metadataObject = isMetadataWriteType(objType);
         const objSource = obj.source ? String(obj.source) : undefined;
         const objDescription = String(obj.description ?? objName);
+
+        if (objName !== objName.toUpperCase()) {
+          results.push({
+            type: objType,
+            name: objName,
+            status: 'failed',
+            error: `Object name "${objName}" contains lowercase characters. SAP object names must be uppercase (e.g. "${objName.toUpperCase()}"). Source code inside the object can use mixed case.`,
+          });
+          break;
+        }
 
         // AFF header validation per object (if schema available)
         const affResult = validateAffHeader(objType, { description: objDescription, originalLanguage: 'en' });
