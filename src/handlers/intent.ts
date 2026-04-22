@@ -2620,6 +2620,7 @@ async function handleSAPWrite(
   const transport = args.transport as string | undefined;
   const lintOverride = args.lintBeforeWrite as boolean | undefined;
   const preflightOverride = args.preflightBeforeWrite as boolean | undefined;
+  const checkOverride = args.checkBeforeWrite as boolean | undefined;
 
   // type and name are required for all actions except batch_create
   if (action !== 'batch_create' && (!type || !name)) {
@@ -2689,11 +2690,19 @@ async function handleSAPWrite(
       const lintWarnings = runPreWriteLint(source, type, name, config, lintOverride);
       if (lintWarnings.blocked) return lintWarnings.result!;
 
+      // Pre-write server-side syntax check (opt-in; never blocks — warnings only).
+      const checkNotes = await runPreWriteSyntaxCheck(client, type, source, objectUrl, config, checkOverride);
+
       await safeUpdateSource(client.http, client.safety, objectUrl, srcUrl, source, transport);
       cachingLayer?.invalidate(type, name);
       const msg = `Successfully updated ${type} ${name}.`;
       const cdsUpdateHint = type === 'DDLS' ? await buildCdsUpdateCrudHint(client, name, objectUrl) : undefined;
-      const warnings = mergePreWriteWarnings(preflightWarnings.warnings, lintWarnings.warnings, cdsUpdateHint);
+      const warnings = mergePreWriteWarnings(
+        preflightWarnings.warnings,
+        lintWarnings.warnings,
+        checkNotes,
+        cdsUpdateHint,
+      );
       return warnings ? textResult(`${msg}\n\n${warnings}`) : textResult(msg);
     }
     case 'create': {
@@ -2935,11 +2944,22 @@ async function handleSAPWrite(
       const lintWarnings = runPreWriteLint(spliced.newSource, type, name, config, lintOverride);
       if (lintWarnings.blocked) return lintWarnings.result!;
 
+      // Pre-write server-side syntax check on the full spliced source (opt-in; warnings only).
+      const checkNotes = await runPreWriteSyntaxCheck(
+        client,
+        type,
+        spliced.newSource,
+        objectUrl,
+        config,
+        checkOverride,
+      );
+
       // Write the full source back (existing lock/modify/unlock flow)
       await safeUpdateSource(client.http, client.safety, objectUrl, srcUrl, spliced.newSource, transport);
       cachingLayer?.invalidate(type, name);
       const msg = `Successfully updated method "${method}" in ${type} ${name}.`;
-      return lintWarnings.warnings ? textResult(`${msg}\n\n${lintWarnings.warnings}`) : textResult(msg);
+      const extras = [lintWarnings.warnings, checkNotes].filter(Boolean).join('\n\n');
+      return extras ? textResult(`${msg}\n\n${extras}`) : textResult(msg);
     }
     case 'scaffold_rap_handlers': {
       // What this action does:
@@ -3557,6 +3577,66 @@ function runPreWriteLint(
   }
 }
 
+/** Types that carry source code that SAP's /checkruns endpoint can meaningfully compile.
+ *  Metadata-write types (DOMA/DTEL/TABL/STRU/MSAG/DEVC/SKTD) have no /source/main artifact. */
+const SYNTAX_CHECKABLE_TYPES = new Set([
+  'PROG',
+  'CLAS',
+  'INTF',
+  'FUNC',
+  'FUGR',
+  'INCL',
+  'DDLS',
+  'DCLS',
+  'DDLX',
+  'BDEF',
+  'SRVD',
+]);
+
+/** Pre-write SAP server-side syntax check via /checkruns with inline <chkrun:content>.
+ *  Sends the proposed source to SAP's compiler without writing. Surfaces errors AND
+ *  warnings as informational text appended to the write's success message — never
+ *  blocks the write. Rationale: multi-file edits have inter-object dependencies, so
+ *  intermediate writes legitimately trip compile errors that resolve once the whole
+ *  sequence lands. Real blocking is deferred to SAPActivate, which runs after all
+ *  dependencies are in place. Best-effort: network/endpoint failures return ''. */
+async function runPreWriteSyntaxCheck(
+  client: AdtClient,
+  type: string,
+  source: string,
+  objectUrl: string,
+  config: ServerConfig,
+  perCallOverride?: boolean,
+): Promise<string> {
+  const enabled = perCallOverride ?? config.checkBeforeWrite;
+  if (!enabled || !source) return '';
+  if (!SYNTAX_CHECKABLE_TYPES.has(type.toUpperCase())) return '';
+
+  try {
+    const result = await syntaxCheck(client.http, client.safety, objectUrl, { content: source, version: 'active' });
+    if (result.messages.length === 0) return '';
+
+    const errors = result.messages.filter((m) => m.severity === 'error');
+    const warnings = result.messages.filter((m) => m.severity === 'warning');
+    const parts: string[] = [];
+
+    if (errors.length > 0) {
+      const lines = errors.map((m) => `  Line ${m.line || '?'}${m.column ? `:${m.column}` : ''}: ${m.text}`).join('\n');
+      parts.push(
+        `Server syntax check errors (source was still written — activate to confirm whether these resolve once dependencies are in place):\n${lines}`,
+      );
+    }
+    if (warnings.length > 0) {
+      const lines = warnings.map((m) => `  Line ${m.line || '?'}: ${m.text}`).join('\n');
+      parts.push(`Server syntax check warnings:\n${lines}`);
+    }
+    return parts.join('\n\n');
+  } catch {
+    // Best-effort: never let a failing pre-check fail the write.
+    return '';
+  }
+}
+
 // ─── SAPActivate Handler ─────────────────────────────────────────────
 
 async function handleSAPActivate(client: AdtClient, args: Record<string, unknown>): Promise<ToolResult> {
@@ -3983,7 +4063,16 @@ async function handleSAPDiagnose(client: AdtClient, args: Record<string, unknown
     case 'syntax': {
       const objectUrl = objectUrlForType(type, name);
       const version = args.version === 'inactive' ? 'inactive' : args.version === 'active' ? 'active' : undefined;
-      const result = await syntaxCheck(client.http, client.safety, objectUrl, version ? { version } : undefined);
+      const content = typeof args.source === 'string' ? (args.source as string) : undefined;
+      const opts: { version?: 'active' | 'inactive'; content?: string } = {};
+      if (version) opts.version = version;
+      if (content !== undefined) opts.content = content;
+      const result = await syntaxCheck(
+        client.http,
+        client.safety,
+        objectUrl,
+        Object.keys(opts).length > 0 ? opts : undefined,
+      );
       return textResult(JSON.stringify(result, null, 2));
     }
     case 'unittest': {

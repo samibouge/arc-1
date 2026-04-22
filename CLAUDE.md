@@ -91,6 +91,7 @@ Copy `.env.example` to `.env` for local development. All config options are defi
 | `ARC1_TOOL_MODE` / `--tool-mode` | Tool mode: `standard` (12 tools, `SAPGit` feature-gated) or `hyperfocused` (1 universal SAP tool, ~200 tokens) |
 | `SAP_ABAPLINT_CONFIG` / `--abaplint-config` | Path to custom abaplint.jsonc config file for lint rules |
 | `SAP_LINT_BEFORE_WRITE` / `--lint-before-write` | Enable pre-write lint validation (default: true) |
+| `SAP_CHECK_BEFORE_WRITE` / `--check-before-write` | Opt-in: pre-write SAP-side syntax check via ADT checkruns with inline content (default: **false**). When enabled, errors/warnings from the proposed source are **appended to the write response** (non-blocking). Off by default because it adds a round-trip per write and, during multi-file edits, surfaces dependency-related errors that self-resolve once later files land. Activation remains the definitive check. |
 | `ARC1_CACHE` / `--cache` | Cache mode: `auto` (default), `memory`, `sqlite`, `none` |
 | `ARC1_CACHE_FILE` / `--cache-file` | SQLite cache file path (default: `.arc1-cache.db`) |
 | `ARC1_CACHE_WARMUP` / `--cache-warmup` | Pre-warm cache on startup via TADIR scan (default: false) |
