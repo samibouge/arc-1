@@ -1,12 +1,15 @@
 /**
  * ARC-1 CLI — command-line interface for SAP ADT operations.
  *
+ * Exposed via the `arc1-cli` bin (separate from `arc1`, which is the MCP server entry).
+ *
  * Two layers:
- *   - `arc1 serve`                     Start the MCP server (default).
- *   - `arc1 call <tool> [...]`         Call any of the 12 MCP tools directly.
- *   - `arc1 tools [<tool>]`            List tools / show a tool's JSON schema.
+ *   - `arc1-cli serve`                  Start the MCP server (same as `arc1`).
+ *   - `arc1-cli call <tool> [...]`      Call any of the 12 MCP tools directly.
+ *   - `arc1-cli tools [<tool>]`         List tools / show a tool's JSON schema.
  *   - Shortcuts: `read`, `source` (alias), `activate`, `syntax`, `sql`, `lint`,
- *     `search`, `version` — one-liners over `call` for common operations.
+ *     `search`, `extract-cookies`, `version` — one-liners over `call` or helpers
+ *     for common operations.
  *
  * The `call` command bypasses the MCP transport but reuses the same dispatch
  * path (`handleToolCall` in src/handlers/intent.ts), so Zod validation,
@@ -160,6 +163,24 @@ program
     process.exit(
       await runToolCall('SAPSearch', { action: 'object', query, maxResults: Number(opts.max) }, opts.output),
     );
+  });
+
+program
+  .command('extract-cookies [args...]')
+  .description('Launch a browser, log into SAP, and write a Netscape cookie file. Pass --help for options.')
+  .allowUnknownOption(true)
+  .helpOption(false)
+  .action(async () => {
+    const idx = process.argv.indexOf('extract-cookies');
+    const forwarded = idx >= 0 ? process.argv.slice(idx + 1) : [];
+    const { run } = await import('./extract-sap-cookies.js');
+    try {
+      await run(forwarded);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`${message}\n`);
+      process.exit(1);
+    }
   });
 
 program

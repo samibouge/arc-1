@@ -14,16 +14,44 @@ import { checkOperation, OperationType, type SafetyConfig } from './safety.js';
 import type { FixDelta, FixProposal, SyntaxCheckResult, SyntaxMessage, UnitTestResult } from './types.js';
 import { escapeXmlAttr, findDeepNodes, parseXml } from './xml-parser.js';
 
-/** Run syntax check on an ABAP object */
+/** Run syntax check on an ABAP object.
+ *
+ *  Two modes:
+ *   - URI-only (default): compile whatever is stored at the URI (active or inactive version).
+ *   - Inline content: compile arbitrary source as if it lived at the URI. Lets callers
+ *     validate a proposed edit BEFORE it is written. Body shape matches Eclipse ADT /
+ *     vibing-steampunk (base64-encoded artifact under <chkrun:artifacts>). Verified on
+ *     NetWeaver 7.50 via scripts/probe-checkrun-content.ts.
+ */
 export async function syntaxCheck(
   http: AdtHttpClient,
   safety: SafetyConfig,
   objectUrl: string,
-  options?: { version?: 'active' | 'inactive' },
+  options?: { version?: 'active' | 'inactive'; content?: string },
 ): Promise<SyntaxCheckResult> {
   checkOperation(safety, OperationType.Read, 'SyntaxCheck');
 
   const version = options?.version ?? 'active';
+
+  if (options?.content !== undefined) {
+    const artifactUri = `${objectUrl}/source/main`;
+    const encoded = Buffer.from(options.content, 'utf-8').toString('base64');
+    const body = `<?xml version="1.0" encoding="UTF-8"?>
+<chkrun:checkObjectList xmlns:chkrun="http://www.sap.com/adt/checkrun" xmlns:adtcore="http://www.sap.com/adt/core">
+  <chkrun:checkObject adtcore:uri="${escapeXmlAttr(objectUrl)}" chkrun:version="${version}">
+    <chkrun:artifacts>
+      <chkrun:artifact chkrun:contentType="text/plain; charset=utf-8" chkrun:uri="${escapeXmlAttr(artifactUri)}">
+        <chkrun:content>${encoded}</chkrun:content>
+      </chkrun:artifact>
+    </chkrun:artifacts>
+  </chkrun:checkObject>
+</chkrun:checkObjectList>`;
+    const resp = await http.post('/sap/bc/adt/checkruns?reporters=abapCheckRun', body, 'application/*', {
+      Accept: 'application/vnd.sap.adt.checkmessages+xml',
+    });
+    return parseSyntaxCheckResult(resp.body);
+  }
+
   const body = `<?xml version="1.0" encoding="UTF-8"?>
 <chkrun:checkObjectList xmlns:chkrun="http://www.sap.com/adt/checkrun" xmlns:adtcore="http://www.sap.com/adt/core">
   <chkrun:checkObject adtcore:uri="${escapeXmlAttr(objectUrl)}" chkrun:version="${version}"/>
