@@ -2691,6 +2691,30 @@ async function handleSAPWrite(
     );
   }
 
+  // STRU update guard: the /ddic/structures/ PUT endpoint silently converts transparent
+  // tables (TABL/DT) into structures (TABL/DS) by creating an inactive INTTAB version.
+  // This corrupts DD02L and confuses SE11. Block STRU updates on objects that are actually tables.
+  if (type === 'STRU' && action === 'update' && name) {
+    try {
+      const searchResults = await client.searchObject(name, 1);
+      const match = searchResults.find((r) => r.objectName.toUpperCase() === name.toUpperCase());
+      if (match && match.objectType !== 'TABL/DS') {
+        if (match.objectType === 'TABL/DT') {
+          const hint = isRelease750()
+            ? 'Use SE11 to modify transparent tables on this system.'
+            : 'Use SAPWrite(type="TABL") instead.';
+          return errorResult(`"${name}" is a transparent table (TABL/DT), not a structure. ${hint}`);
+        }
+        return errorResult(
+          `"${name}" exists as ${match.objectType}, not a structure (TABL/DS). ` +
+            `SAPWrite(type="STRU") only works with DDIC structures.`,
+        );
+      }
+    } catch {
+      // search failed — proceed cautiously (SAP's own 405 on create guards against new collisions)
+    }
+  }
+
   // NW 7.50: /ddic/tables/ doesn't exist — TABL is hidden from the tool schema,
   // but guard at runtime too in case an LLM hallucinates the type.
   if (type === 'TABL' && isRelease750() && (action === 'create' || action === 'update')) {
