@@ -1141,7 +1141,7 @@ export async function handleToolCall(
           result = await handleSAPWrite(client, args, config, cachingLayer);
           break;
         case 'SAPActivate':
-          result = await handleSAPActivate(client, args);
+          result = await handleSAPActivate(client, args, cachingLayer);
           break;
         case 'SAPNavigate':
           result = await handleSAPNavigate(client, args);
@@ -1241,6 +1241,13 @@ function isBtpSystem(): boolean {
   return cachedFeatures?.systemType === 'btp';
 }
 
+/** Check if the connected system is NW 7.50 (missing several ADT endpoints) */
+function isRelease750(): boolean {
+  const r = cachedFeatures?.abapRelease?.replace(/\D/g, '') ?? '';
+  const num = Number.parseInt(r, 10);
+  return Number.isFinite(num) && num >= 750 && num < 751;
+}
+
 /** BTP-specific error messages for unavailable operations */
 const BTP_HINTS: Record<string, string> = {
   PROG: 'Executable programs (reports) are not available on BTP ABAP Environment. Use CLAS with IF_OO_ADT_CLASSRUN for console applications.',
@@ -1260,10 +1267,33 @@ async function handleSAPRead(
 ): Promise<ToolResult> {
   const type = normalizeObjectType(String(args.type ?? ''));
   const name = String(args.name ?? '');
+  const sourceVersion = args.version as string | undefined;
 
   // BTP: return helpful error for unavailable types
   if (isBtpSystem() && BTP_HINTS[type]) {
     return errorResult(BTP_HINTS[type]);
+  }
+
+  // When version="active", fetch the active source directly via ?version=active
+  // for source-based types. Handled before the main switch to avoid per-case duplication.
+  const SOURCE_TYPES = new Set([
+    'PROG',
+    'CLAS',
+    'INTF',
+    'FUNC',
+    'INCL',
+    'DDLS',
+    'DCLS',
+    'DDLX',
+    'BDEF',
+    'SRVD',
+    'TABL',
+    'STRU',
+  ]);
+  if (sourceVersion && SOURCE_TYPES.has(type) && name) {
+    const srcUrl = sourceUrlForType(type, name);
+    const resp = await client.http.get(`${srcUrl}${srcUrl.includes('?') ? '&' : '?'}version=${sourceVersion}`);
+    return textResult(resp.body);
   }
 
   // Helper: get source with cache support, returns cache hit status
@@ -1272,7 +1302,7 @@ async function handleSAPRead(
     objName: string,
     fetcher: () => Promise<string>,
   ): Promise<{ source: string; cacheHit: boolean }> => {
-    if (!cachingLayer) return { source: await fetcher(), cacheHit: false };
+    if (sourceVersion || !cachingLayer) return { source: await fetcher(), cacheHit: false };
     const { source, hit } = await cachingLayer.getSource(objType, objName, fetcher);
     return { source, cacheHit: hit };
   };
@@ -1429,7 +1459,8 @@ async function handleSAPRead(
       }
     }
     case 'TABL': {
-      const { source, cacheHit } = await cachedGet('TABL', name, () => client.getTable(name));
+      const tablReader = isRelease750() ? () => client.getStructure(name) : () => client.getTable(name);
+      const { source, cacheHit } = await cachedGet('TABL', name, tablReader);
       return cachedTextResult(source, cacheHit);
     }
     case 'VIEW': {
@@ -1910,6 +1941,7 @@ function needsVendorContentType(type: string): boolean {
 function createContentTypeForType(type: string): string {
   // SRVB creation works with wildcard content type; updates use vendor v2 type.
   if (type === 'SRVB') return 'application/*';
+  if (type === 'STRU') return 'application/vnd.sap.adt.blues.v1+xml';
   return needsVendorContentType(type) ? vendorContentTypeForType(type) : 'application/*';
 }
 
@@ -2284,7 +2316,7 @@ export function buildCreateXml(
   <adtcore:packageRef adtcore:name="${escapeXml(pkg)}"/>
 </dcl:dclSource>`;
     case 'TABL':
-      // TABL creation also uses SAP's "blue" framework envelope, then source is written via /source/main.
+    case 'STRU':
       return `<?xml version="1.0" encoding="UTF-8"?>
 <blue:blueSource xmlns:blue="http://www.sap.com/wbobj/blue"
                  xmlns:adtcore="http://www.sap.com/adt/core"
@@ -2656,6 +2688,15 @@ async function handleSAPWrite(
       `Object name "${name}" contains lowercase characters. SAP object names must be uppercase (e.g. "${name.toUpperCase()}").\n\n` +
         `Note: the object NAME in TADIR must be uppercase, but the source code inside the object can use mixed case ` +
         `(e.g. for DDLS: name="${name.toUpperCase()}" but source can contain "define view entity ${name}").`,
+    );
+  }
+
+  // NW 7.50: /ddic/tables/ doesn't exist — TABL is hidden from the tool schema,
+  // but guard at runtime too in case an LLM hallucinates the type.
+  if (type === 'TABL' && isRelease750() && (action === 'create' || action === 'update')) {
+    return errorResult(
+      `TABL create/update is not available on this SAP release (NW 7.50). ` +
+        `Use SE11 to create or modify tables and structures. SAPRead(type="TABL") works for reading.`,
     );
   }
 
@@ -3683,7 +3724,11 @@ async function runPreWriteSyntaxCheck(
 
 // ─── SAPActivate Handler ─────────────────────────────────────────────
 
-async function handleSAPActivate(client: AdtClient, args: Record<string, unknown>): Promise<ToolResult> {
+async function handleSAPActivate(
+  client: AdtClient,
+  args: Record<string, unknown>,
+  cachingLayer?: CachingLayer,
+): Promise<ToolResult> {
   const action = String(args.action ?? 'activate');
   const name = String(args.name ?? '');
   const version = String(args.version ?? '0001');
@@ -3805,6 +3850,7 @@ async function handleSAPActivate(client: AdtClient, args: Record<string, unknown
     const statusDetails = formatBatchActivationStatuses(batchStatuses);
 
     if (result.success) {
+      for (const o of objects) cachingLayer?.invalidate(o.type, o.name);
       return textResult(`Successfully activated ${objects.length} objects: ${names}.${statusDetails}`);
     }
     // On batch failure enrich with per-object inactive-version syntax errors —
@@ -3828,6 +3874,7 @@ async function handleSAPActivate(client: AdtClient, args: Record<string, unknown
   const result = await activate(client.http, client.safety, objectUrl, { ...activateOpts, name });
 
   if (result.success) {
+    cachingLayer?.invalidate(type, name);
     return textResult(`Successfully activated ${type} ${name}.${formatActivationMessages(result)}`);
   }
   // On failure, try to enrich with the actual compiler errors from the inactive version —

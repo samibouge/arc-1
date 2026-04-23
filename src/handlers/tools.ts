@@ -493,6 +493,12 @@ export function getToolDefinitions(
             description:
               'For VERSION_SOURCE: URI of a specific revision from SAPRead(type="VERSIONS") response (.revisions[].uri). Must start with /sap/bc/adt/.',
           },
+          version: {
+            type: 'string',
+            enum: ['active', 'inactive'],
+            description:
+              'Source version to read. Omit to get the default (latest, possibly inactive). Set to "active" to get the last activated version, or "inactive" to explicitly get the pending inactive version. Do not set this routinely — only when you need to compare active vs inactive state.',
+          },
         },
         required: ['type'],
       },
@@ -522,7 +528,16 @@ export function getToolDefinitions(
           },
           type: {
             type: 'string',
-            enum: btp ? SAPWRITE_TYPES_BTP : SAPWRITE_TYPES_ONPREM,
+            enum: (() => {
+              const types = [...(btp ? SAPWRITE_TYPES_BTP : SAPWRITE_TYPES_ONPREM)];
+              const release = resolvedFeatures?.abapRelease?.replace(/\D/g, '') ?? '';
+              const is750 = Number.parseInt(release, 10) >= 750 && Number.parseInt(release, 10) < 751;
+              if (is750) {
+                const idx = types.indexOf('TABL');
+                if (idx >= 0) types.splice(idx, 1, 'STRU');
+              }
+              return types;
+            })(),
             description: btp
               ? 'Object type (for create/update/delete/edit_method). Supported: CLAS, INTF, DDLS, DDLX, BDEF, SRVD, TABL, DOMA, DTEL.'
               : 'Object type (for create/update/delete/edit_method). Supported: PROG, CLAS, INTF, FUNC, INCL, DDLS, DDLX, BDEF, SRVD, TABL, DOMA, DTEL.',
