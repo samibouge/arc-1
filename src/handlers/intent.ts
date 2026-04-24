@@ -2968,6 +2968,21 @@ async function handleSAPWrite(
         }
       }
 
+      // MSAG create with a task number silently fails — CL_ADT_MESSAGE_CLASS_API=>create()
+      // passes corrNr to CTS_WBO_API_INSERT_OBJECTS which only accepts request numbers.
+      // The TADIR entry is created but T100/T100A are never written (phantom object).
+      // Confirmed on NW 7.50; unclear whether later releases fixed it, so validate everywhere.
+      if (type === 'MSAG' && effectiveTransport) {
+        const tr = await getTransport(client.http, client.safety, effectiveTransport);
+        if (!tr) {
+          return errorResult(
+            `Transport "${effectiveTransport}" is not a valid transport request. ` +
+              `On this SAP release, MSAG creation requires the transport request number, not a task number. ` +
+              `Use SAPTransport(action="get", id="<request>") to verify, or SAPTransport(action="list") to find modifiable requests.`,
+          );
+        }
+      }
+
       // CDS pre-write validation: reject unsupported syntax early
       const cdsGuard = guardCdsSyntax(type, source, cachedFeatures);
       if (cdsGuard) return cdsGuard;
