@@ -1260,6 +1260,119 @@ const BTP_HINTS: Record<string, string> = {
   TRAN: 'Transaction codes (TRAN) are not available on BTP ABAP Environment. Use SAPSearch to find apps and services instead.',
 };
 
+/** Static release-gating tables: minimum SAP_BASIS release required for each type/action.
+ *  Values from probe catalog + empirical verification. Separated by operation because
+ *  read and write endpoints for the same type may have different minimum releases. */
+interface ReleaseGate {
+  minRelease: number;
+  hint: string;
+}
+
+const READ_RELEASE_GATES: Record<string, ReleaseGate> = {
+  DOMA: {
+    minRelease: 751,
+    hint:
+      'Structured domain reads (DOMA) are not available on this system. ' +
+      'Alternative: use SAPQuery to read domain metadata from DD01L (type, length, value table) ' +
+      'and fixed values from DD07T. Example: SELECT DOMNAME, DATATYPE, LENG, OUTPUTLEN, ENTITYTAB ' +
+      "FROM DD01L WHERE DOMNAME = '<name>' AND AS4LOCAL = 'A'",
+  },
+  DDLX: {
+    minRelease: 751,
+    hint: 'CDS metadata extensions (DDLX) are not available on this system. Requires SAP_BASIS >= 7.51.',
+  },
+  AUTH: {
+    minRelease: 751,
+    hint: 'Authorization field metadata (AUTH) is not available on this system. Use transaction SU20/SU21 instead.',
+  },
+  ENHO: {
+    minRelease: 751,
+    hint: 'Enhancement implementation reads (ENHO) are not available on this system. Use SE18/SE19 instead.',
+  },
+  FTG2: {
+    minRelease: 752,
+    hint: 'Feature toggles (FTG2) are not available on this system. Use transaction SFW5 instead.',
+  },
+  API_STATE: {
+    minRelease: 752,
+    hint: 'API release state checking is not available on this system. Use SE24 to check API deprecation.',
+  },
+  SKTD: {
+    minRelease: 754,
+    hint: 'Knowledge Transfer Documents (SKTD) are not available on this system. Requires SAP_BASIS >= 7.54.',
+  },
+  BDEF: {
+    minRelease: 754,
+    hint: 'Behavior definitions (BDEF) are not available on this system. Requires SAP_BASIS >= 7.54 (S/4HANA).',
+  },
+  SRVD: {
+    minRelease: 754,
+    hint: 'Service definitions (SRVD) are not available on this system. Requires SAP_BASIS >= 7.54 (S/4HANA).',
+  },
+  SRVB: {
+    minRelease: 754,
+    hint: 'Service bindings (SRVB) are not available on this system. Requires SAP_BASIS >= 7.54 (S/4HANA).',
+  },
+};
+
+const WRITE_RELEASE_GATES: Record<string, ReleaseGate> = {
+  DOMA: {
+    minRelease: 751,
+    hint: 'Domain (DOMA) writes are not available on this system. Use SE11 to create or modify domains instead.',
+  },
+  DDLX: {
+    minRelease: 751,
+    hint: 'CDS metadata extension (DDLX) writes are not available on this system. Requires SAP_BASIS >= 7.51.',
+  },
+  SKTD: {
+    minRelease: 754,
+    hint: 'Knowledge Transfer Document (SKTD) writes are not available on this system. Requires SAP_BASIS >= 7.54.',
+  },
+  BDEF: {
+    minRelease: 754,
+    hint: 'Behavior definition (BDEF) writes are not available on this system. Requires SAP_BASIS >= 7.54 (S/4HANA).',
+  },
+  SRVD: {
+    minRelease: 754,
+    hint: 'Service definition (SRVD) writes are not available on this system. Requires SAP_BASIS >= 7.54 (S/4HANA).',
+  },
+  SRVB: {
+    minRelease: 754,
+    hint: 'Service binding (SRVB) writes are not available on this system. Requires SAP_BASIS >= 7.54 (S/4HANA).',
+  },
+};
+
+const ACTION_RELEASE_GATES: Record<string, ReleaseGate> = {
+  publish_srvb: {
+    minRelease: 754,
+    hint: 'Service binding publishing is not available on this system. Requires SAP_BASIS >= 7.54.',
+  },
+  unpublish_srvb: {
+    minRelease: 754,
+    hint: 'Service binding unpublishing is not available on this system. Requires SAP_BASIS >= 7.54.',
+  },
+  change_package: {
+    minRelease: 754,
+    hint: 'Package reassignment (change_package) is not available on this system. Use SE80 or SE03 instead.',
+  },
+};
+
+/** Parse abapRelease string to a numeric value (e.g. "750" → 750, "7.54" → 754). */
+function parseRelease(abapRelease?: string): number {
+  if (!abapRelease) return 0;
+  const num = Number.parseInt(abapRelease.replace(/\D/g, ''), 10);
+  return Number.isFinite(num) ? num : 0;
+}
+
+/** Check if a type/action is gated by release. Returns the hint string if blocked, undefined if allowed. */
+function checkReleaseGate(gates: Record<string, ReleaseGate>, key: string): string | undefined {
+  const gate = gates[key];
+  if (!gate) return undefined;
+  const release = parseRelease(cachedFeatures?.abapRelease);
+  if (release > 0 && release < gate.minRelease) return gate.hint;
+  return undefined;
+}
+
 async function handleSAPRead(
   client: AdtClient,
   args: Record<string, unknown>,
@@ -1272,6 +1385,11 @@ async function handleSAPRead(
   // BTP: return helpful error for unavailable types
   if (isBtpSystem() && BTP_HINTS[type]) {
     return errorResult(BTP_HINTS[type]);
+  }
+
+  const releaseGateHint = checkReleaseGate(READ_RELEASE_GATES, type);
+  if (releaseGateHint) {
+    return errorResult(releaseGateHint);
   }
 
   // When version="active", fetch the active source directly via ?version=active
@@ -2680,6 +2798,11 @@ async function handleSAPWrite(
     return errorResult('"type" and "name" are required for this action.');
   }
 
+  const releaseGateHint = checkReleaseGate(WRITE_RELEASE_GATES, type);
+  if (releaseGateHint) {
+    return errorResult(releaseGateHint);
+  }
+
   // SAP object names must be uppercase — mixed-case names cause silent corruption
   // (e.g. DDLS created as "Zc_MyView" instead of "ZC_MYVIEW" confuses the TADIR registry).
   // Note: source code inside the object CAN use mixed case (e.g. "define view ZC_MyView").
@@ -3757,6 +3880,11 @@ async function handleSAPActivate(
   const name = String(args.name ?? '');
   const version = String(args.version ?? '0001');
   const explicitServiceType = args.service_type as string | undefined;
+
+  const releaseGateHint = checkReleaseGate(ACTION_RELEASE_GATES, action);
+  if (releaseGateHint) {
+    return errorResult(releaseGateHint);
+  }
 
   // Resolve the OData service type for publish/unpublish endpoints.
   // Explicit service_type parameter takes precedence; otherwise auto-detect from SRVB metadata.
@@ -5214,6 +5342,11 @@ async function handleSAPManage(
   const action = String(args.action ?? '');
   const flpUnavailableMessage =
     'FLP customization service (PAGE_BUILDER_CUST) is not available on this system. Check ICF service activation in SICF.';
+
+  const releaseGateHint = checkReleaseGate(ACTION_RELEASE_GATES, action);
+  if (releaseGateHint) {
+    return errorResult(releaseGateHint);
+  }
 
   switch (action) {
     case 'features': {
