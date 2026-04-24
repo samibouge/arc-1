@@ -35,7 +35,7 @@ function mockHttp(body = ''): AdtHttpClient {
   } as unknown as AdtHttpClient;
 }
 
-const gitSafety = { ...unrestrictedSafetyConfig(), enableGit: true };
+const gitSafety = { ...unrestrictedSafetyConfig(), allowGitWrites: true };
 
 function firstRepo(): AbapGitRepo {
   return parseAbapGitRepos(loadFixture('abapgit-repos-v2.xml'))[0]!;
@@ -89,9 +89,9 @@ describe('abapGit client helpers', () => {
     expect(body).toContain('http://www.sap.com/adt/abapgit/externalRepo');
   });
 
-  it('createRepo is blocked when enableGit=false', async () => {
+  it('createRepo is blocked when allowGitWrites=false', async () => {
     const http = mockHttp(loadFixture('abapgit-repos-v2.xml'));
-    const safety = { ...unrestrictedSafetyConfig(), enableGit: false };
+    const safety = { ...unrestrictedSafetyConfig(), allowGitWrites: false };
     await expect(
       createRepo(http, safety, { package: '$TMP', url: 'https://github.com/example/repo.git' }),
     ).rejects.toThrow(AdtSafetyError);

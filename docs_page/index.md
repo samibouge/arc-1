@@ -11,20 +11,20 @@ ARC-1 is a TypeScript MCP server (distributed as an npm package and Docker image
 | | [abap-adt-api](https://github.com/marcellourbani/abap-adt-api) | [mcp-abap-adt](https://github.com/mario-andreschak/mcp-abap-adt) | **ARC-1** |
 |---|:---:|:---:|:---:|
 | npm package + Docker image | — | — | **Y** |
-| Read-only mode / package whitelist | — | — | **Y** |
+| Read-only default / package allowlist | — | — | **Y** |
 | Transport controls (CTS safety) | — | — | **Y** |
 | HTTP Streamable transport (Copilot Studio) | — | — | **Y** |
-| 11 intent-based tools for AI agents | — | — | **Y** |
+| 12 intent-based tools for AI agents | — | — | **Y** |
 | Method-level read/edit (95% token reduction) | — | — | **Y** |
 | Context compression (7-30x) | — | — | **Y** |
 | Works with 8+ MCP clients | — | — | **Y** |
 
-As an **admin**, you control what the AI can and cannot do:
+As an **admin**, you control what the AI can and cannot do via positive-opt-in flags:
 
-- Restrict to read-only, specific packages, or whitelisted operations
-- Require transport assignments before any write (update/delete auto-uses lock correction number when available)
-- Block free-form SQL execution
-- Allow or deny individual operation types per deployment
+- Default deny for every mutation; admin explicitly enables writes, transport writes, git writes, data preview, and freestyle SQL separately
+- Package allowlist restricts writes to `$TMP`, `Z*`, or any pattern
+- `SAP_DENY_ACTIONS` blocks individual actions (e.g. `SAPWrite.delete`) for admins who need a finer scalpel
+- Every tool call audited with user identity; per-user scopes (via XSUAA role collections, OIDC JWTs, or API-key profiles) tighten further
 
 ## Quick Start
 
@@ -74,7 +74,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 }
 ```
 
-**ARC-1 is read-only by default** — no writes, no free SQL, no table preview, no transport actions. To change that, edit the same `env` block that starts ARC-1. For example, `ARC1_PROFILE=viewer-sql` keeps the server read-only but enables SQL + named table preview. The example below shows the "everything on" variant (writes + SQL + transports + all packages):
+**ARC-1 is read-only by default** — no writes, no free SQL, no table preview, no transport actions. To change that, edit the same `env` block that starts ARC-1. For example, `SAP_ALLOW_DATA_PREVIEW=true SAP_ALLOW_FREE_SQL=true` keeps the server read-only but enables SQL + named table preview. The example below shows the "everything on" variant (writes + SQL + transports + all packages):
 
 ```json
 {
@@ -87,7 +87,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
         "SAP_USER": "your-username",
         "SAP_PASSWORD": "your-password",
         "SAP_CLIENT": "100",
-        "ARC1_PROFILE": "developer-sql",
+        "SAP_ALLOW_WRITES": "true", "SAP_ALLOW_DATA_PREVIEW": "true", "SAP_ALLOW_FREE_SQL": "true", "SAP_ALLOW_TRANSPORT_WRITES": "true",
         "SAP_ALLOWED_PACKAGES": "*"
       }
     }
@@ -95,7 +95,13 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 }
 ```
 
-Profiles are the main local-dev knob. Start with `ARC1_PROFILE=viewer`, `ARC1_PROFILE=viewer-sql`, or `ARC1_PROFILE=developer-sql`, then use [configuration-reference.md](configuration-reference.md) for the full matrix and individual flags.
+Pick the lightest combination that gets your work done. Common starting points:
+
+- **Read/search only**: nothing — defaults are already read-only.
+- **Read + data preview + SQL**: `SAP_ALLOW_DATA_PREVIEW=true`, `SAP_ALLOW_FREE_SQL=true`.
+- **Developer (writes to $TMP/Z*)**: `SAP_ALLOW_WRITES=true`, `SAP_ALLOWED_PACKAGES='$TMP,Z*'`, optionally `SAP_ALLOW_TRANSPORT_WRITES=true` for CTS.
+
+See [authorization.md](authorization.md) for the three-layer model and the full [capability requirements](authorization.md#capability-requirements).
 
 ### Claude Code
 
@@ -139,7 +145,7 @@ Add to VS Code / Copilot MCP config:
 }
 ```
 
-For VS Code / Copilot HTTP mode, profiles go on the ARC-1 startup command, not in the MCP JSON. Example: `ARC1_PROFILE=viewer-sql npx arc-1@latest --transport http-streamable ...`
+For VS Code / Copilot HTTP mode, safety flags go on the ARC-1 startup command, not in the MCP JSON. Example: `SAP_ALLOW_DATA_PREVIEW=true SAP_ALLOW_FREE_SQL=true npx arc-1@latest --transport http-streamable ...`
 
 HTTP Streamable is also the transport for **Copilot Studio** (Microsoft Power Platform integrations).
 
@@ -149,7 +155,7 @@ All MCP clients that support stdio work out of the box — just point them at `n
 
 ## Tools
 
-ARC-1 exposes 11 intent-based tools via MCP, designed for AI agents like Copilot Studio.
+ARC-1 exposes 12 intent-based tools via MCP, designed for AI agents like Copilot Studio.
 
 Full reference: **[tools.md](tools.md)**
 
@@ -162,16 +168,16 @@ Full reference: **[tools.md](tools.md)**
 
 ## Admin Controls (Safety)
 
-Safe by default — read-only, no SQL, no data preview, no transports. Writes are restricted to `$TMP`.
+Safe by default - read-only, no SQL, no data preview, no transport writes, no Git writes. Writes are restricted to `$TMP`.
 
-- `ARC1_PROFILE=viewer` or nothing: read/search only.
-- `ARC1_PROFILE=viewer-sql`: still read-only, but enables SQL + named table preview.
-- `ARC1_PROFILE=developer`: writes + transports in `$TMP`, still no SQL or named table preview.
-- `ARC1_PROFILE=developer-sql` + `SAP_ALLOWED_PACKAGES='*'`: full local development access. (Quote the `*` in shell so it isn't globbed to filenames.)
+Every capability is a separate positive opt-in flag:
 
-Profiles never widen a stricter server flag. Example: `ARC1_PROFILE=developer` + `SAP_READ_ONLY=true` is still read-only.
+- **Nothing**: read / search / navigate / lint / diagnose work out of the box.
+- `SAP_ALLOW_DATA_PREVIEW=true` + `SAP_ALLOW_FREE_SQL=true`: enable named table preview and freestyle SQL.
+- `SAP_ALLOW_WRITES=true` + `SAP_ALLOWED_PACKAGES='$TMP,Z*'`: enable object writes to `$TMP` and `Z*` packages.
+- Add `SAP_ALLOW_TRANSPORT_WRITES=true` for CTS transport mutations, `SAP_ALLOW_GIT_WRITES=true` for abapGit / gCTS pushes.
 
-Full env/CLI reference, profile expansions, and recipes: [configuration-reference.md](configuration-reference.md).
+The three-layer model (server flag + user scope + SAP authorization) is described in [authorization.md](authorization.md). Full flag reference: [configuration-reference.md](configuration-reference.md).
 
 ## Documentation
 
@@ -184,7 +190,7 @@ Full env/CLI reference, profile expansions, and recipes: [configuration-referenc
 | [updating.md](updating.md) | Update procedures (npx / Docker / BTP / git) |
 | [enterprise-auth.md](enterprise-auth.md) | Auth internals — Layer A / Layer B, coexistence matrix |
 | [authorization.md](authorization.md) | Scopes, roles, safety profiles |
-| [tools.md](tools.md) | Complete tool reference (11 intent-based tools) |
+| [tools.md](tools.md) | Complete tool reference (12 intent-based tools) |
 | [mcp-usage.md](mcp-usage.md) | AI agent usage guide & workflow patterns |
 | [architecture.md](architecture.md) | System architecture with Mermaid diagrams |
 | [caching.md](caching.md) | Object caching — memory, SQLite, pre-warmer, reverse dep lookup |

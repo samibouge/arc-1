@@ -10,7 +10,7 @@ Distributed as an npm package (`arc-1`) and Docker image (`ghcr.io/marianfoo/arc
 
 ## Design Principles
 
-1. **Centralized admin control** — Runs as a managed service, not on developer laptops. Admins configure safety gates (read-only, package allowlists, operation filters, SQL blocking, transport guards) per instance. Every tool call is audited with user identity. Per-user JWT scopes can restrict further but never expand beyond server config.
+1. **Centralized admin control** — Runs as a managed service, not on developer laptops. Admins configure a server-wide safety ceiling (`allowWrites`, package allowlists, SQL/data/transport/Git gates, deny actions) per instance. Every tool call is audited with user identity. Per-user JWT scopes can restrict further but never expand beyond server config.
 
 2. **Per-user SAP identity** — Principal propagation maps each MCP user to their own SAP user via BTP Destination Service + Cloud Connector. SAP's native authorization (S_DEVELOP, package checks) applies per user. No shared service accounts.
 
@@ -74,16 +74,14 @@ Copy `.env.example` to `.env` for local development. All config options are defi
 | `SAP_TRANSPORT` / `--transport` | MCP transport: `stdio` (default) or `http-streamable` |
 | `ARC1_PORT` / `--port` | HTTP server port (default: `8080`). Simpler alternative to `ARC1_HTTP_ADDR` when only the port needs to change |
 | `ARC1_HTTP_ADDR` / `--http-addr` | HTTP server bind address (default: `0.0.0.0:8080`). Use when you need to change both host and port |
-| `SAP_READ_ONLY` / `--read-only` | Block all write operations (default: **true**) |
-| `SAP_BLOCK_DATA` / `--block-data` | Block named table preview (default: **true**) |
-| `SAP_BLOCK_FREE_SQL` / `--block-free-sql` | Block RunQuery execution (default: **true**) |
-| `SAP_ALLOWED_OPS` / `--allowed-ops` | Whitelist operation types (e.g., "RSQ") |
-| `SAP_DISALLOWED_OPS` / `--disallowed-ops` | Blacklist operation types (e.g., "CDUA") |
-| `SAP_ALLOWED_PACKAGES` / `--allowed-packages` | Restrict write operations to packages (default: `$TMP`; supports wildcards: "Z*"). Reads are not restricted by package. |
-| `SAP_ENABLE_TRANSPORTS` / `--enable-transports` | Enable CTS transport management (default: false) |
-| `SAP_ENABLE_GIT` / `--enable-git` | Enable gCTS/abapGit write operations in `SAPGit` (default: false) |
-| `ARC1_API_KEY` / `--api-key` | API key for MCP endpoint auth (Bearer token) |
-| `ARC1_API_KEYS` / `--api-keys` | Multiple API keys with profiles (`key1:viewer,key2:developer`) |
+| `SAP_ALLOW_WRITES` / `--allow-writes` | Enable object mutations (create/update/delete/activate/FLP/package mgmt). Default: `false` (restrictive). Also required for transport/git writes. |
+| `SAP_ALLOW_DATA_PREVIEW` / `--allow-data-preview` | Enable named table content preview (`SAPRead(type=TABLE_CONTENTS)`). Default: `false`. |
+| `SAP_ALLOW_FREE_SQL` / `--allow-free-sql` | Enable freestyle SQL (`SAPQuery`). Default: `false`. |
+| `SAP_ALLOW_TRANSPORT_WRITES` / `--allow-transport-writes` | Enable transport mutations (`SAPTransport.create`/`release`/`delete`). Default: `false`. **Also requires** `SAP_ALLOW_WRITES=true`. |
+| `SAP_ALLOW_GIT_WRITES` / `--allow-git-writes` | Enable git mutations (`SAPGit.clone`/`pull`/`push`). Default: `false`. **Also requires** `SAP_ALLOW_WRITES=true`. |
+| `SAP_ALLOWED_PACKAGES` / `--allowed-packages` | Restrict write operations to packages (default: `$TMP`; supports wildcards: `Z*`). `*` = any. Reads are never package-gated. |
+| `SAP_DENY_ACTIONS` / `--deny-actions` | Fine-grained per-action denial. Grammar: `Tool`, `Tool.action`, `Tool.glob*` (tool-qualified only). Inline CSV or file path. Fails fast on invalid input. See [authorization.md](docs_page/authorization.md#advanced-deny-actions). |
+| `ARC1_API_KEYS` / `--api-keys` | Multiple API keys with profiles (`key1:viewer,key2:developer`). Valid profiles: `viewer`, `viewer-data`, `viewer-sql`, `developer`, `developer-data`, `developer-sql`, `admin`. Each profile maps to a scope set AND a partial SafetyConfig intersected with the server ceiling. Single `ARC1_API_KEY` was removed in v0.7. |
 | `SAP_OIDC_ISSUER` / `--oidc-issuer` | OIDC issuer URL for JWT validation |
 | `SAP_OIDC_AUDIENCE` / `--oidc-audience` | OIDC audience for JWT validation |
 | `SAP_BTP_SERVICE_KEY` / `--btp-service-key` | BTP ABAP service key JSON (direct connection) |
@@ -104,7 +102,6 @@ Copy `.env.example` to `.env` for local development. All config options are defi
 | `SAP_PP_STRICT` / `--pp-strict` | PP failure = error, no fallback to shared client (default: false) |
 | `SAP_PP_ALLOW_SHARED_COOKIES` / `--pp-allow-shared-cookies` | Opt-in escape hatch allowing `SAP_COOKIE_FILE`/`SAP_COOKIE_STRING` to coexist with `SAP_PP_ENABLED`. Cookies stay on shared client only. (default: false) |
 | `SAP_DISABLE_SAML` / `--disable-saml` | Opt-in: disable SAML redirect via `X-SAP-SAML2: disabled` + `?saml2=disabled`. Do NOT use on BTP ABAP or S/4 Public Cloud. (default: false) |
-| `ARC1_PROFILE` / `--profile` | Safety profile shortcut: `viewer`, `viewer-data`, `viewer-sql`, `developer`, `developer-data`, `developer-sql` |
 
 ## Codebase Structure
 
@@ -132,7 +129,7 @@ src/
 │   ├── http.ts                 # HTTP transport (undici/fetch, CSRF, cookies, sessions)
 │   ├── discovery.ts            # ADT discovery (endpoint MIME map fetch + resolve)
 │   ├── errors.ts               # Typed errors (AdtApiError, AdtSafetyError, AdtNetworkError)
-│   ├── safety.ts               # Safety system (read-only, op filter, pkg filter)
+│   ├── safety.ts               # Safety system (positive opt-ins, package gates, deny actions)
 │   ├── features.ts             # Feature detection (auto/on/off)
 │   ├── config.ts, types.ts     # ADT client config + response types
 │   ├── xml-parser.ts           # XML parser (fast-xml-parser v5)
@@ -216,7 +213,7 @@ tests/
 | Add audit logging | `src/server/audit.ts`, `src/server/sinks/` |
 | Add elicitation prompt | `src/server/elicit.ts` |
 | Add XSUAA/JWT auth | `src/server/xsuaa.ts` |
-| Modify scope enforcement | `src/handlers/intent.ts` (TOOL_SCOPES), `src/server/server.ts` (tool listing filter) |
+| Modify scope enforcement | `src/authz/policy.ts` (`ACTION_POLICY`), `src/handlers/intent.ts` (runtime check), `src/server/server.ts` (tool listing filter) |
 | Modify OIDC token handling | `src/server/http.ts` (validateOidcToken, ~line 274) |
 | Add/modify auth scopes | `xs-security.json`, `src/server/xsuaa.ts`, `src/server/http.ts`, `src/handlers/intent.ts` |
 | Add / modify auth combination rule | `src/server/config.ts` (validateConfig at ~line 305), `src/server/types.ts` (ServerConfig), `tests/unit/server/config.test.ts`, `docs/enterprise-auth.md` (Coexistence Matrix) |
@@ -256,7 +253,7 @@ MCP Transport (stdio or HTTP Streamable)
   ├─ HTTP: auth layer (server/http.ts)
   │   ├─ XSUAA OAuth (xsuaa.ts) → checkLocalScope() → AuthInfo { scopes, clientId, userName }
   │   ├─ OIDC JWT (http.ts) → jwtVerify() → AuthInfo { scopes }
-  │   └─ API key (http.ts) → exact match → AuthInfo { scopes: all }
+  │   └─ API key (http.ts) → exact match in ARC1_API_KEYS → AuthInfo { scopes from profile }
   │
   ▼
 Tool Call Handler (server/server.ts)
@@ -266,7 +263,7 @@ Tool Call Handler (server/server.ts)
   ▼
 handleToolCall (handlers/intent.ts)
   │
-  ├─ 1. Scope check: TOOL_SCOPES[toolName] vs authInfo.scopes (only when authInfo present)
+  ├─ 1. Scope check: ACTION_POLICY[tool/action-or-type] vs authInfo.scopes (only when authInfo present)
   ├─ 2. Zod validation: getToolSchema(toolName) → safeParse(args) (rejects invalid input with LLM-friendly errors)
   ├─ 3. Route to handler: handleSAPRead(), handleSAPWrite(), etc.
   ├─ 4. Package check: checkPackage(safety, packageName) (for all SAPWrite actions: create, update, delete, edit_method)
@@ -296,32 +293,27 @@ SAP ABAP System (ADT REST API)
 
 ### Safety System (`src/adt/safety.ts`)
 
-Server-level config, set at startup via env vars / CLI flags. Applies to ALL users.
+Server-level config, set at startup via env vars / CLI flags, applies to all users as the ceiling:
+`allowWrites`, `allowDataPreview`, `allowFreeSQL`, `allowTransportWrites`, `allowGitWrites`,
+`allowedPackages`, `allowedTransports`, and `denyActions`.
 
-**Operation Types** (single-character codes, used in `allowedOps`/`disallowedOps`):
-```
-R = Read       S = Search     Q = Query (table preview)   F = FreeSQL
-C = Create     U = Update     D = Delete                  A = Activate
-T = Test       L = Lock       I = Intelligence             W = Workflow
-X = Transport
-```
+The internal `OperationType` enum is still used by code (`Read`, `Search`, `Query`, `FreeSQL`,
+`Create`, `Update`, `Delete`, `Activate`, `Test`, `Lock`, `Intelligence`, `Workflow`,
+`Transport`), but op-code env vars were removed. Admins use the high-level `allow*` flags plus
+`SAP_DENY_ACTIONS`.
 
-Write ops blocked by `readOnly`: `CDUAW`. All 36+ ADT endpoints have `checkOperation()` guards.
+Mutating operations require `allowWrites=true`. Transport writes additionally require
+`allowTransportWrites=true`; Git writes additionally require `allowGitWrites=true`.
+All ADT endpoints must have `checkOperation()` guards.
 
-### Scope Enforcement (`src/handlers/intent.ts`)
+### Scope Enforcement (`src/authz/policy.ts`, `src/handlers/intent.ts`)
 
-`TOOL_SCOPES` maps each MCP tool to a required scope. Only enforced when `authInfo` is present (HTTP transport with auth). Stdio has no auth → all tools allowed.
+`ACTION_POLICY` maps each `(tool, action/type)` to a required scope and operation type. It is the
+single source of truth for runtime scope checks and tool-list pruning. Stdio has no user auth, so
+only the server safety ceiling and SAP authorization apply.
 
-```typescript
-const TOOL_SCOPES: Record<string, string> = {
-  SAPRead: 'read',      SAPWrite: 'write',
-  SAPSearch: 'read',    SAPActivate: 'write',
-  SAPQuery: 'sql',      SAPManage: 'write',
-  SAPNavigate: 'read',  SAPTransport: 'write',
-  SAPContext: 'read',   SAPLint: 'read',
-  SAPDiagnose: 'read',
-};
-```
+Supported user scopes: `read`, `write`, `data`, `sql`, `transports`, `git`, `admin`.
+`admin` implies all scopes; `write` implies `read`; `sql` implies `data`.
 
 ### Auth Providers (Chained)
 
@@ -367,7 +359,7 @@ case 'DOMA': {
 
 ```typescript
 checkOperation(this.safety, OperationType.Create, 'CreateObject');
-// Throws AdtSafetyError if blocked by readOnly, allowedOps, etc.
+// Throws AdtSafetyError if blocked by allowWrites, allowFreeSQL, package gates, etc.
 ```
 
 ### CRUD Pattern (lock → modify → unlock)

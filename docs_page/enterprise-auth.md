@@ -65,7 +65,7 @@ These methods control who can talk to ARC-1 when it runs as an HTTP server. Not 
 When using ARC-1 locally via `npx` or `npm`, the MCP client connects through stdio (standard input/output). No network auth is needed — security relies on the user's OS-level access.
 
 **Upsides:** Zero setup. Works immediately.
-**Downsides:** No per-user identity. No authorization scopes — only [safety config](authorization.md#safety-config-the-server-level-ceiling) applies.
+**Downsides:** No per-user identity. No authorization scopes - only the [server ceiling](authorization.md#where-to-set-things) applies.
 **When to use:** Local development, personal use.
 
 ### API Key
@@ -81,7 +81,7 @@ A shared secret token. Simple to set up, no external IdP needed. Supports **mult
 
 ### OIDC / JWT (External Identity Provider)
 
-Per-user authentication via any [OpenID Connect](https://openid.net/specs/openid-connect-core-1_0.html) provider (Microsoft Entra ID, Google, Okta, Keycloak, Auth0, etc.). Users authenticate with their corporate identity. Tokens carry per-user [scopes](authorization.md#scopes) for fine-grained authorization.
+Per-user authentication via any [OpenID Connect](https://openid.net/specs/openid-connect-core-1_0.html) provider (Microsoft Entra ID, Google, Okta, Keycloak, Auth0, etc.). Users authenticate with their corporate identity. Tokens carry per-user [scopes](authorization.md#user-scopes) for fine-grained authorization.
 
 **Upsides:** Per-user identity. Per-user scopes. Works with existing corporate IdPs. Standard protocol.
 **Downsides:** Requires an OIDC provider. Token rotation is automatic (refresh tokens) but initial setup is more complex.
@@ -94,7 +94,7 @@ Per-user authentication via any [OpenID Connect](https://openid.net/specs/openid
 
 SAP's own OAuth service for BTP applications. Similar to OIDC but uses SAP's [Authorization and Trust Management Service](https://help.sap.com/docs/btp/sap-business-technology-platform/what-is-sap-authorization-and-trust-management-service). Scopes and roles are managed in the BTP Cockpit.
 
-**Upsides:** Native BTP integration. Scopes and roles managed in BTP Cockpit. Supports [role collections](authorization.md#xsuaa-roles-btp-deployments) for easy user management. MCP clients auto-discover the OAuth configuration.
+**Upsides:** Native BTP integration. Scopes and roles managed in BTP Cockpit. Supports [role collections](authorization.md#btp-xsuaa-role-templates) for easy user management. MCP clients auto-discover the OAuth configuration.
 **Downsides:** Only available on BTP. More complex setup than API Key.
 **When to use:** BTP Cloud Foundry deployments.
 **Prerequisites:** BTP subaccount with XSUAA service instance.
@@ -114,7 +114,7 @@ Username and password sent with every HTTP request to SAP. The simplest SAP auth
 **Upsides:** Zero SAP-side setup. Works with any SAP system.
 **Downsides:** Credentials stored in config. Single SAP user for all MCP users. No per-user audit trail.
 **When to use:** Local dev, shared servers where SAP identity doesn't matter.
-**Prerequisites:** A SAP user with appropriate authorization (see [SAP-Side Authorization](authorization.md#sap-side-authorization-layer-2)).
+**Prerequisites:** A SAP user with appropriate authorization (see [Authorization & Roles](authorization.md#the-model-in-one-picture)).
 
 ```bash
 arc1 --url http://sap:50000 --user DEVELOPER --password secret
@@ -181,7 +181,7 @@ For BTP deployments connecting to on-premise SAP systems via Cloud Connector. Th
 stdio (no MCP auth) → Basic Auth to SAP
 ```
 
-Simplest setup. Single user. Use `--profile developer` for write access or `--profile viewer` for read-only.
+Simplest setup. Single user. Leave defaults for read-only access, or set `SAP_ALLOW_WRITES=true` (plus `SAP_ALLOWED_PACKAGES="$TMP,Z*"`) to enable developer writes.
 
 ### Team Server with Role-Based Access
 
@@ -400,12 +400,10 @@ S_ADT_RES authorization, SSO-only system needing `SAP_DISABLE_SAML=true`).
 | Flag | Env Var | Description |
 |------|---------|-------------|
 | **MCP Client Auth** | | |
-| `--api-key` | `ARC1_API_KEY` | Single API key (full scopes) |
 | `--api-keys` | `ARC1_API_KEYS` | Multiple API keys with profiles (`key:profile,...`) |
 | `--oidc-issuer` | `SAP_OIDC_ISSUER` | OIDC issuer URL |
 | `--oidc-audience` | `SAP_OIDC_AUDIENCE` | Expected token audience (**required** when `--oidc-issuer` is set) |
 | `--xsuaa-auth` | `SAP_XSUAA_AUTH` | Enable XSUAA OAuth proxy (`true`/`false`) |
-| `--profile` | `ARC1_PROFILE` | Safety profile shortcut (`viewer`, `developer`, etc.) |
 | **SAP Auth** | | |
 | `--user` | `SAP_USER` | SAP username (basic auth) |
 | `--password` | `SAP_PASSWORD` | SAP password (basic auth) |

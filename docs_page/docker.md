@@ -21,8 +21,8 @@ without spawning a new process per session.
    - [Cookie files inside the container](#cookie-files-inside-the-container)
    - [Proxy, TLS, and networking](#proxy-tls-and-networking)
 6. [MCP Client Integration](#mcp-client-integration)
-   - [Claude Desktop](#claude-desktop)
-   - [Gemini CLI / Other Agents](#gemini-cli--other-agents)
+   - [Claude Desktop](#claude-desktop-stdio-fallback)
+   - [Gemini CLI / Other Agents](#gemini-cli-other-agents)
 7. [Updating the Image](#updating-the-image)
 8. [Security Notes](#security-notes)
 9. [Troubleshooting](#troubleshooting)
@@ -242,18 +242,18 @@ MCP Client
 
 ## Passing Configuration into Docker
 
-All ARC-1 env vars, CLI flags, profiles, and safety recipes live in [configuration-reference.md](configuration-reference.md). This page only covers the Docker-specific part: how to pass that config into a container.
+All ARC-1 env vars, CLI flags, and safety recipes live in [configuration-reference.md](configuration-reference.md). This page only covers the Docker-specific part: how to pass that config into a container.
 
 ### Env vars and env files
 
 Use `-e` for short examples and `--env-file` when the list gets long:
 
 ```bash
-# Keep connection/auth settings in .env, add a profile at runtime
+# Keep connection/auth settings in .env, add extra safety opt-ins at runtime
 docker run -d --rm \
   -p 8080:8080 \
   --env-file .env \
-  -e ARC1_PROFILE=developer \
+  -e SAP_ALLOW_WRITES=true -e SAP_ALLOW_TRANSPORT_WRITES=true \
   ghcr.io/marianfoo/arc-1:latest
 ```
 
@@ -263,14 +263,14 @@ For the "everything on" local-dev path:
 docker run -d --rm \
   -p 8080:8080 \
   --env-file .env \
-  -e ARC1_PROFILE=developer-sql \
+  -e SAP_ALLOW_WRITES=true SAP_ALLOW_DATA_PREVIEW=true SAP_ALLOW_FREE_SQL=true SAP_ALLOW_TRANSPORT_WRITES=true \
   -e SAP_ALLOWED_PACKAGES='*' \
   ghcr.io/marianfoo/arc-1:latest
 ```
 
 Keep credentials and stable connection settings in `.env`; layer temporary overrides with `-e`.
 
-For what `ARC1_PROFILE`, `SAP_ENABLE_TRANSPORTS`, `SAP_ALLOWED_OPS`, `SAP_ALLOWED_PACKAGES`, and the rest actually do, use [configuration-reference.md](configuration-reference.md). Ready-made read-only, sandboxed, and developer recipes live in [configuration-reference.md → Common recipes](configuration-reference.md#common-recipes). That page shows raw `ENV=value` values: use them as-is in `.env` and `--env-file`, but quote shell-sensitive package patterns when you pass them via `-e`.
+For what `SAP_ALLOW_WRITES`, `SAP_ALLOW_TRANSPORT_WRITES`, `SAP_DENY_ACTIONS`, `SAP_ALLOWED_PACKAGES`, and the rest actually do, use [configuration-reference.md](configuration-reference.md). Ready-made read-only, sandboxed, and developer recipes live in [configuration-reference.md → Recipes](configuration-reference.md#recipes). That page shows raw `ENV=value` values: use them as-is in `.env` and `--env-file`, but quote shell-sensitive package patterns when you pass them via `-e`.
 
 If you pass package patterns like `*` or `$TMP` through `-e SAP_ALLOWED_PACKAGES=...`, use single quotes so the shell does not expand them: `-e SAP_ALLOWED_PACKAGES='*'` or `-e SAP_ALLOWED_PACKAGES='Z*,$TMP'`.
 
@@ -505,7 +505,7 @@ when a new `ghcr.io/marianfoo/arc-1` image tag is published.
    restricted permissions (`chmod 600`) and is in `.gitignore`.
 
 3. **Default is already read-only.** Only enable write access on
-   development systems via `ARC1_PROFILE=developer` or `SAP_READ_ONLY=false`.
+   development systems via `SAP_ALLOW_WRITES=true SAP_ALLOW_TRANSPORT_WRITES=true` or `SAP_ALLOW_WRITES=false`.
 
 4. **The container runs as a non-root user** (`arc1:arc1`) inside Alpine. There
    are no open ports — the attack surface is minimal.
@@ -544,7 +544,7 @@ docker run -i --rm -e SAP_URL=https://host:44300 ... arc1
 x509: certificate signed by unknown authority
 ```
 
-Either add your CA certificate (see [Network / TLS](#network--tls)) or use
+Either add your CA certificate (see [Network / TLS](#proxy-tls-and-networking)) or use
 `SAP_INSECURE=true` in non-production environments.
 
 ### `authentication required` error
@@ -571,5 +571,5 @@ docker run -i --rm \
 1. Check feature flags — features in `auto` mode may have been turned off because
    the SAP component was not detected. Force them on with e.g.
    `SAP_FEATURE_RAP=on`.
-2. Check `SAP_ALLOWED_OPS` / `SAP_DISALLOWED_OPS` — operation filters can block
-   tools at the handler level even if they are registered.
+2. Check `SAP_DENY_ACTIONS` — deny rules hide matching actions from tool listings
+   and block them again at call time.

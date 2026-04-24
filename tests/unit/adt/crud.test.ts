@@ -140,25 +140,13 @@ describe('CRUD Operations', () => {
       expect(url).toContain('accessMode=MODIFY');
     });
 
-    it('is blocked when safety disallows Lock', async () => {
-      const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), disallowedOps: 'L' };
-      await expect(lockObject(http, safety, '/url')).rejects.toThrow(AdtSafetyError);
-    });
-
-    it('Lock type L is not in WRITE_OPS — readOnly does not block lock', async () => {
-      // Lock is gated by its own operation type 'L', not by readOnly flag.
-      // readOnly blocks CDUAW (Create, Delete, Update, Activate, Workflow).
+    it('Lock type L is not a mutating operation — allowWrites=false does not block lock', async () => {
+      // Lock is gated by its own operation type 'L', not by the write gate.
+      // allowWrites=false blocks CDUAWX (Create, Delete, Update, Activate, Workflow, Transport).
       // This is intentional: lock is needed for read operations like syntax check.
       const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), readOnly: true };
+      const safety = { ...unrestrictedSafetyConfig(), allowWrites: false };
       await expect(lockObject(http, safety, '/url')).resolves.toBeDefined();
-    });
-
-    it('is blocked when Lock ops are explicitly disallowed', async () => {
-      const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), disallowedOps: 'L' };
-      await expect(lockObject(http, safety, '/url')).rejects.toThrow(AdtSafetyError);
     });
 
     it('handles namespaced objects (Issue #18)', async () => {
@@ -278,7 +266,7 @@ describe('CRUD Operations', () => {
 
     it('is blocked in read-only mode', async () => {
       const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), readOnly: true };
+      const safety = { ...unrestrictedSafetyConfig(), allowWrites: false };
       await expect(createObject(http, safety, '/url', '<xml/>')).rejects.toThrow(AdtSafetyError);
     });
 
@@ -371,7 +359,7 @@ describe('CRUD Operations', () => {
 
     it('is blocked in read-only mode', async () => {
       const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), readOnly: true };
+      const safety = { ...unrestrictedSafetyConfig(), allowWrites: false };
       await expect(updateSource(http, safety, '/url', 'source', 'handle')).rejects.toThrow(AdtSafetyError);
     });
   });
@@ -415,7 +403,7 @@ describe('CRUD Operations', () => {
 
     it('is blocked in read-only mode', async () => {
       const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), readOnly: true };
+      const safety = { ...unrestrictedSafetyConfig(), allowWrites: false };
       await expect(updateObject(http, safety, '/url', '<xml/>', 'handle', 'application/xml')).rejects.toThrow(
         AdtSafetyError,
       );
@@ -440,13 +428,7 @@ describe('CRUD Operations', () => {
 
     it('is blocked in read-only mode', async () => {
       const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), readOnly: true };
-      await expect(deleteObject(http, safety, '/url', 'handle')).rejects.toThrow(AdtSafetyError);
-    });
-
-    it('is blocked when Delete operations are disallowed', async () => {
-      const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), disallowedOps: 'D' };
+      const safety = { ...unrestrictedSafetyConfig(), allowWrites: false };
       await expect(deleteObject(http, safety, '/url', 'handle')).rejects.toThrow(AdtSafetyError);
     });
   });

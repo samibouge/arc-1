@@ -32,7 +32,7 @@ For single-developer setups on your own laptop, use [local-development.md](local
 |---|---|
 | Docker on any VM / container host | [Docker deployment](#docker-on-any-vm) |
 | BTP Cloud Foundry, on-prem SAP via Cloud Connector | [BTP CF with PP](#btp-cloud-foundry-with-principal-propagation) |
-| BTP Cloud Foundry, BTP ABAP backend | [BTP CF + BTP ABAP](#btp-cloud-foundry--btp-abap-environment) |
+| BTP Cloud Foundry, BTP ABAP backend | [BTP CF + BTP ABAP](#btp-cloud-foundry-btp-abap-environment) |
 
 ---
 
@@ -47,8 +47,8 @@ docker run -d --name arc1 -p 8080:8080 \
   -e SAP_URL=https://your-sap-host:44300 \
   -e SAP_USER=SVC_ARC1 -e SAP_PASSWORD=... \
   -e SAP_CLIENT=100 \
-  -e ARC1_API_KEY=$(openssl rand -hex 32) \
-  -e ARC1_PROFILE=developer \
+  -e ARC1_API_KEYS="$(openssl rand -hex 32):admin" \
+  -e SAP_ALLOW_WRITES=true SAP_ALLOW_TRANSPORT_WRITES=true \
   -e SAP_ALLOWED_PACKAGES='Z*,$TMP' \
   ghcr.io/marianfoo/arc-1:latest
 ```
@@ -68,23 +68,23 @@ docker run -d --name arc1 -p 8080:8080 \
   ghcr.io/marianfoo/arc-1:latest
 ```
 
-This example only turns on OIDC validation for the MCP endpoint. It does **not** widen the server's safety ceiling: ARC-1 still defaults to read-only, no SQL, no named table preview, no transports, and writes restricted to `$TMP` unless you set a profile or explicit safety flags.
+This example only turns on OIDC validation for the MCP endpoint. It does **not** widen the server's safety ceiling: ARC-1 still defaults to read-only, no SQL, no named table preview, no transport writes, and writes restricted to `$TMP` unless you set explicit `SAP_ALLOW_*` safety flags.
 
 If this shared server should allow development work, add these flags to the same `docker run` command:
 
 ```bash
--e ARC1_PROFILE=developer \
+-e SAP_ALLOW_WRITES=true SAP_ALLOW_TRANSPORT_WRITES=true \
 -e SAP_ALLOWED_PACKAGES='Z*,$TMP'
 ```
 
-JWT scopes and profiles sit **beneath** that server ceiling. A token with `write` or `sql` scopes still cannot bypass `SAP_READ_ONLY=true` or other stricter server flags. Full matrix: [configuration-reference.md](configuration-reference.md). Scope model and ceiling interaction: [authorization.md](authorization.md#how-safety-and-scopes-interact).
+Per-user JWT scopes and API-key profiles sit **beneath** that server ceiling — they can only tighten, never widen. A user with the `write` scope still cannot mutate objects when `SAP_ALLOW_WRITES=false`. Full model: [authorization.md](authorization.md#capability-requirements). Every flag: [configuration-reference.md](configuration-reference.md).
 
 ARC-1 audit logs show the real MCP user; SAP audit logs show the shared service account. Trade-off — good compromise when you can't use PP.
 For this shared-user mode, ARC-1 runs a startup auth preflight (`/sap/bc/adt/core/discovery`) and blocks SAP tool calls on 401/403 with a clear remediation message. This avoids hammering SAP with repeated failed logins when the technical password/client is wrong.
 
 **Full references:**
 - [docker.md](docker.md) — image tags, build, ports, troubleshooting
-- [api-key-setup.md](api-key-setup.md) — single / multi-key, profiles
+- [api-key-setup.md](api-key-setup.md) — one or more API-key entries with profiles
 - [oauth-jwt-setup.md](oauth-jwt-setup.md) — OIDC with Entra ID / Okta / Keycloak
 - [security-guide.md](security-guide.md) — production hardening checklist
 
@@ -124,7 +124,7 @@ cf set-env arc1 SAP_BTP_DESTINATION MY_SAP_DESTINATION
 cf set-env arc1 SAP_BTP_PP_DESTINATION MY_SAP_PP_DESTINATION
 cf set-env arc1 SAP_PP_ENABLED true
 cf set-env arc1 SAP_XSUAA_AUTH true
-cf set-env arc1 ARC1_PROFILE developer
+cf set-env arc1 SAP_ALLOW_WRITES true && cf set-env arc1 SAP_ALLOW_TRANSPORT_WRITES true
 cf set-env arc1 SAP_ALLOWED_PACKAGES 'Z*'
 ```
 
@@ -165,12 +165,12 @@ cf set-env arc1 SAP_XSUAA_AUTH true
 For any deployment visible to a network, before you open the gate:
 
 - [ ] TLS terminated by a reverse proxy or platform (never HTTP on a public port)
-- [ ] `ARC1_API_KEY` or OIDC / XSUAA configured — never run HTTP mode without Layer A auth
-- [ ] `SAP_READ_ONLY=true` unless you've deliberately enabled writes
+- [ ] `ARC1_API_KEYS` or OIDC / XSUAA configured — never run HTTP mode without Layer A auth
+- [ ] `SAP_ALLOW_WRITES=false` unless you've deliberately enabled writes
 - [ ] `SAP_ALLOWED_PACKAGES` set to a specific allowlist, not `*`
-- [ ] `SAP_BLOCK_DATA=true` and `SAP_BLOCK_FREE_SQL=true` unless you need them
-- [ ] `SAP_ENABLE_TRANSPORTS=false` unless you need CTS management
-- [ ] `SAP_ENABLE_GIT=false` unless you need gCTS/abapGit writes (reads are always allowed when the backends are available)
+- [ ] `SAP_ALLOW_DATA_PREVIEW=false` and `SAP_ALLOW_FREE_SQL=false` unless you need them
+- [ ] `SAP_ALLOW_TRANSPORT_WRITES=false` unless you need CTS management
+- [ ] `SAP_ALLOW_GIT_WRITES=false` unless you need gCTS/abapGit writes (reads are always allowed when the backends are available)
 - [ ] If using cookies: `SAP_PP_ENABLED=true` and cookies both set? → refuses unless `SAP_PP_ALLOW_SHARED_COOKIES=true` escape hatch is explicit
 - [ ] Audit log sink configured (file or BTP Audit Log Service)
 - [ ] Image pinned to an exact version (`:0.7.0`), not `:latest`

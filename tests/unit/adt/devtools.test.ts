@@ -130,12 +130,6 @@ describe('DevTools', () => {
       expect(result.messages).toHaveLength(1);
       expect(result.messages[0]).toEqual({ severity: 'error', text: 'Error found', line: 5, column: 1 });
     });
-
-    it('is blocked when Read is disallowed', async () => {
-      const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), disallowedOps: 'R' };
-      await expect(syntaxCheck(http, safety, '/sap/bc/adt/programs/programs/ZTEST')).rejects.toThrow(AdtSafetyError);
-    });
   });
 
   // ─── prettyPrint ──────────────────────────────────────────────────
@@ -238,7 +232,7 @@ describe('DevTools', () => {
 
     it('is blocked in read-only mode', async () => {
       const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), readOnly: true };
+      const safety = { ...unrestrictedSafetyConfig(), allowWrites: false };
       await expect(activate(http, safety, '/sap/bc/adt/programs/programs/ZTEST')).rejects.toThrow(AdtSafetyError);
     });
 
@@ -505,7 +499,7 @@ describe('DevTools', () => {
 
     it('is blocked in read-only mode', async () => {
       const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), readOnly: true };
+      const safety = { ...unrestrictedSafetyConfig(), allowWrites: false };
       await expect(
         activateBatch(http, safety, [{ url: '/sap/bc/adt/programs/programs/ZTEST', name: 'ZTEST' }]),
       ).rejects.toThrow(AdtSafetyError);
@@ -565,7 +559,7 @@ describe('DevTools', () => {
 
     it('is blocked in read-only mode', async () => {
       const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), readOnly: true };
+      const safety = { ...unrestrictedSafetyConfig(), allowWrites: false };
       await expect(publishServiceBinding(http, safety, 'ZSB_TEST')).rejects.toThrow(AdtSafetyError);
     });
   });
@@ -602,7 +596,7 @@ describe('DevTools', () => {
 
     it('is blocked in read-only mode', async () => {
       const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), readOnly: true };
+      const safety = { ...unrestrictedSafetyConfig(), allowWrites: false };
       await expect(unpublishServiceBinding(http, safety, 'ZSB_TEST')).rejects.toThrow(AdtSafetyError);
     });
   });
@@ -711,12 +705,6 @@ describe('DevTools', () => {
       const http = mockHttp(xml);
       const results = await runUnitTests(http, unrestrictedSafetyConfig(), '/sap/bc/adt/oo/classes/ZCL_TEST');
       expect(results[0]?.duration).toBe(0.015);
-    });
-
-    it('is blocked when T is disallowed', async () => {
-      const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), disallowedOps: 'T' };
-      await expect(runUnitTests(http, safety, '/sap/bc/adt/oo/classes/ZCL_TEST')).rejects.toThrow(AdtSafetyError);
     });
   });
 
@@ -836,14 +824,6 @@ describe('DevTools', () => {
       expect(body).toBe(source);
     });
 
-    it('getFixProposals is blocked when read operation is disallowed', async () => {
-      const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), disallowedOps: 'R' };
-      await expect(
-        getFixProposals(http, safety, '/sap/bc/adt/programs/programs/ZTEST/source/main', 'REPORT ztest.', 1, 0),
-      ).rejects.toThrow(AdtSafetyError);
-    });
-
     it('applyFixProposal parses deltas', async () => {
       const xml = `<?xml version="1.0" encoding="utf-8"?>
 <quickfixes:applicationResult xmlns:quickfixes="http://www.sap.com/adt/quickfixes">
@@ -943,22 +923,6 @@ describe('DevTools', () => {
       const body = (http.post as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
       expect(body).toContain('&lt;A&amp;B&gt;');
       expect(body).toContain('use &lt;tag&gt; &amp; &quot;quote&quot;');
-    });
-
-    it('applyFixProposal is blocked when read operation is disallowed', async () => {
-      const http = mockHttp();
-      const safety = { ...unrestrictedSafetyConfig(), disallowedOps: 'R' };
-      await expect(
-        applyFixProposal(
-          http,
-          safety,
-          { uri: '/sap/bc/adt/quickfixes/1', type: 'quickfix/proposal', name: 'Fix', description: '', userContent: '' },
-          '/sap/bc/adt/programs/programs/ZTEST/source/main',
-          'REPORT ztest.',
-          1,
-          0,
-        ),
-      ).rejects.toThrow(AdtSafetyError);
     });
   });
 

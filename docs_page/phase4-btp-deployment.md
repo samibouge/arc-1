@@ -97,7 +97,7 @@ The `mta.yaml` already configures these properties:
 - `SAP_BTP_DESTINATION` / `SAP_BTP_PP_DESTINATION` — dual-destination pattern
 - `SAP_PP_ENABLED: true` — per-user principal propagation
 - `SAP_XSUAA_AUTH: true` — XSUAA OAuth for MCP clients
-- `SAP_READ_ONLY: true` / `SAP_BLOCK_FREE_SQL: true` — safety defaults
+- `SAP_ALLOW_WRITES: true` / `SAP_ALLOW_FREE_SQL: true` — safety defaults
 
 ### 3. Customize mta.yaml
 
@@ -190,8 +190,8 @@ applications:
       SAP_PP_ENABLED: "true"
       SAP_XSUAA_AUTH: "true"
       # Safety: read-only, no SQL
-      SAP_READ_ONLY: "true"
-      SAP_BLOCK_FREE_SQL: "true"
+      SAP_ALLOW_WRITES: "true"
+      SAP_ALLOW_FREE_SQL: "true"
     services:
       - arc1-xsuaa
       - arc1-connectivity
@@ -230,8 +230,8 @@ cf push
 **Never put secrets in manifest.yml.** Set them via `cf set-env`:
 
 ```bash
-# API Key for simple auth (Phase 1)
-cf set-env arc1-mcp-server ARC1_API_KEY "your-secure-api-key"
+# API key for simple auth
+cf set-env arc1-mcp-server ARC1_API_KEYS "your-secure-api-key:admin"
 
 # OR OAuth/OIDC validation (Phase 2) — recommended
 cf set-env arc1-mcp-server SAP_OIDC_ISSUER "https://login.microsoftonline.com/{tenant-id}/v2.0"
@@ -408,8 +408,8 @@ applications:
       SAP_BTP_PP_DESTINATION: "SAP_TRIAL_PP"
       SAP_PP_ENABLED: "true"
       SAP_XSUAA_AUTH: "true"
-      SAP_READ_ONLY: "true"
-      SAP_BLOCK_FREE_SQL: "true"
+      SAP_ALLOW_WRITES: "true"
+      SAP_ALLOW_FREE_SQL: "true"
     services:
       - arc1-xsuaa
       - arc1-connectivity

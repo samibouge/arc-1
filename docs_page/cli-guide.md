@@ -90,32 +90,34 @@ arc1 version
 
 ## MCP Server Configuration
 
-All connection and safety flags are available:
+All connection and safety flags are available. Each capability is a separate positive opt-in:
 
 ```bash
 # Default: safe mode (read-only, no SQL, no data preview)
 arc1
 
-# Developer profile: enables writes + transports
-arc1 --profile developer
+# Developer: enable writes + transports (writes restricted to $TMP by default)
+arc1 --allow-writes=true --allow-transport-writes=true
 
-# Full access: writes + SQL + data + transports
-arc1 --profile developer-sql
+# Full access: writes + SQL + data preview + transports + git
+arc1 --allow-writes=true --allow-data-preview=true --allow-free-sql=true \
+     --allow-transport-writes=true --allow-git-writes=true \
+     --allowed-packages='*'
 
-# Or enable individual capabilities
-arc1 --read-only=false           # Enable writes
-arc1 --block-free-sql=false      # Enable free SQL
-arc1 --block-data=false          # Enable table preview
+# Enable individual capabilities
+arc1 --allow-writes=true            # Enable object mutations
+arc1 --allow-free-sql=true          # Enable freestyle SQL
+arc1 --allow-data-preview=true      # Enable named table preview
 
 # Restrict write operations to specific packages (reads are not restricted by package)
 # Use single quotes — bash expands $TMP inside double quotes.
 arc1 --allowed-packages 'ZPROD*,$TMP'
 
-# Whitelist operations
-arc1 --allowed-ops "RSQ"
+# Fine-grained deny list (tool-qualified only)
+arc1 --allow-writes=true --deny-actions "SAPWrite.delete,SAPManage.flp_*"
 
 # API key authentication
-arc1 --transport http-streamable --api-key "my-secret-key"
+arc1 --transport http-streamable --api-keys "my-secret-key:viewer"
 
 # OIDC authentication
 arc1 --transport http-streamable \
@@ -126,4 +128,11 @@ arc1 --transport http-streamable \
 SAP_BTP_DESTINATION=SAP_TRIAL arc1
 ```
 
-Full configuration reference: **[CLAUDE.md](../CLAUDE.md#configuration)**
+To inspect the resolved policy and config sources:
+
+```bash
+arc1 config show
+arc1 config show --format=json
+```
+
+Full configuration reference: [configuration-reference.md](configuration-reference.md).

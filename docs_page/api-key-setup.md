@@ -38,7 +38,7 @@ arc1 --url https://sap.example.com:44300 \
     --password 'ServicePassword123' \
     --transport http-streamable \
     --http-addr 0.0.0.0:8080 \
-    --api-key 'K7mQ3xR9vL2pN8wY5tJ6hB4cF1gD0eA='
+    --api-keys 'K7mQ3xR9vL2pN8wY5tJ6hB4cF1gD0eA=:admin'
 
 # Using environment variables
 export SAP_URL=https://sap.example.com:44300
@@ -46,9 +46,11 @@ export SAP_USER=SAP_SERVICE_USER
 export SAP_PASSWORD=ServicePassword123
 export SAP_TRANSPORT=http-streamable
 export SAP_HTTP_ADDR=0.0.0.0:8080
-export ARC1_API_KEY='K7mQ3xR9vL2pN8wY5tJ6hB4cF1gD0eA='
+export ARC1_API_KEYS='K7mQ3xR9vL2pN8wY5tJ6hB4cF1gD0eA=:admin'
 arc1
 ```
+
+This starts with ARC-1's safe server defaults. The `admin` profile grants all user scopes, but it does not open the server ceiling. Add explicit `SAP_ALLOW_*` flags if this instance should permit writes, SQL, transports, or Git.
 
 ### 3. Test the Connection
 
@@ -67,7 +69,7 @@ curl http://localhost:8080/health
 
 ## Multi-Key Setup (Role-Based Access)
 
-For teams that need different access levels, use `--api-keys` to assign each key a [profile](authorization.md#profiles-safety-presets):
+For teams that need different access levels, use `--api-keys` to assign each key an [API-key profile](authorization.md#api-key-profiles-non-btp):
 
 ### 1. Generate Keys Per Role
 
@@ -85,22 +87,34 @@ arc1 --url https://sap.example.com:44300 \
     --user SAP_SERVICE_USER \
     --password 'ServicePassword123' \
     --transport http-streamable \
+    --allow-writes=true \
+    --allow-data-preview=true \
+    --allow-free-sql=true \
+    --allow-transport-writes=true \
     --api-keys "$VIEWER_KEY:viewer,$DEV_KEY:developer,$SQL_KEY:developer-sql"
 
 # Using environment variable
+export SAP_ALLOW_WRITES=true
+export SAP_ALLOW_DATA_PREVIEW=true
+export SAP_ALLOW_FREE_SQL=true
+export SAP_ALLOW_TRANSPORT_WRITES=true
 export ARC1_API_KEYS="$VIEWER_KEY:viewer,$DEV_KEY:developer,$SQL_KEY:developer-sql"
 arc1
 ```
 
 The profile mapping lives on the ARC-1 server, not in the client config. If you want a read-only SQL key, use `viewer-sql` in `ARC1_API_KEYS`, for example `"$VIEWER_KEY:viewer,$SQL_KEY:viewer-sql,$DEV_KEY:developer"`. The client still sends only `Authorization: Bearer ...`, and stricter global server flags still win.
 
-Each key gets both scopes (tool visibility) and safety restrictions from its profile:
+Each key gets both scopes (tool visibility) and safety restrictions from its profile. The server ceiling still wins.
+
+Profiles are fixed names built into ARC-1. `ARC1_API_KEYS` selects one profile per key; it does not support custom per-key scopes or custom per-key package allowlists.
 
 | Key | Profile | Can Do | Cannot Do |
 |-----|---------|--------|-----------|
-| `$VIEWER_KEY` | `viewer` | Read source, search, navigate | Write, data, SQL |
-| `$DEV_KEY` | `developer` | Read + write source, transports | Data preview, SQL |
-| `$SQL_KEY` | `developer-sql` | Everything | Nothing restricted |
+| `$VIEWER_KEY` | `viewer` | Read source, search, navigate, lint, diagnose | Write, data preview, SQL, transports, git |
+| `$DEV_KEY` | `developer` | All of viewer + write source in `$TMP` + transport mutations + git mutations if server flags allow them | Data preview, freestyle SQL, writes outside `$TMP` |
+| `$SQL_KEY` | `developer-sql` | All of developer + data preview + freestyle SQL | Writes outside `$TMP` (server ceiling still applies) |
+
+Important: `developer`, `developer-data`, and `developer-sql` API-key profiles are intentionally capped to `$TMP`. There is no `developer-z` profile and no `key:developer:Z*` syntax. If a key must write to `Z*` packages, use a tightly scoped `admin` key with `SAP_ALLOWED_PACKAGES='Z*,$TMP'`, or use OIDC/XSUAA for per-user authorization.
 
 ### 3. Test Per-Key Access
 
@@ -120,16 +134,17 @@ curl -X POST -H "Authorization: Bearer $DEV_KEY" \
 
 ### Available Profiles
 
-| Profile | Scopes | Description |
-|---------|--------|-------------|
-| `viewer` | `read` | Read-only source code access |
-| `viewer-data` | `read`, `data` | Source + table preview |
-| `viewer-sql` | `read`, `data`, `sql` | Source + table preview + SQL |
-| `developer` | `read`, `write` | Full development, no data |
-| `developer-data` | `read`, `write`, `data` | Development + table preview |
-| `developer-sql` | `read`, `write`, `data`, `sql` | Full access |
+| Profile           | Scopes                                                  | Description                              |
+|-------------------|---------------------------------------------------------|------------------------------------------|
+| `viewer`          | `read`                                                  | Read-only source + search + navigate     |
+| `viewer-data`     | `read`, `data`                                          | + named table preview                    |
+| `viewer-sql`      | `read`, `data`, `sql`                                   | + freestyle SQL                          |
+| `developer`       | `read`, `write`, `transports`, `git`                    | Full developer (write + CTS + Git)       |
+| `developer-data`  | `read`, `write`, `data`, `transports`, `git`            | Developer + data preview                 |
+| `developer-sql`   | `read`, `write`, `data`, `sql`, `transports`, `git`     | Developer + data + SQL                   |
+| `admin`           | all 7 scopes                                            | Admin — implies everything at runtime    |
 
-See [Authorization & Roles](authorization.md) for detailed scope descriptions.
+Each profile also carries a partial SafetyConfig that intersects with the server ceiling (never widens). Full authorization model: [authorization.md](authorization.md).
 
 ## Client Configuration
 
@@ -208,7 +223,7 @@ docker run -d \
   -e SAP_PASSWORD=secret \
   -e SAP_TRANSPORT=http-streamable \
   -e SAP_HTTP_ADDR=0.0.0.0:8080 \
-  -e ARC1_API_KEY='your-api-key-here' \
+  -e ARC1_API_KEYS='your-api-key-here:admin' \
   -p 8080:8080 \
   arc1
 ```

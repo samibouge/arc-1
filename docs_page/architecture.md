@@ -19,7 +19,7 @@ flowchart TB
         end
 
         subgraph Auth["Authentication Layer"]
-            APIKEY[API Key<br/>ARC1_API_KEY]
+            APIKEY[API Keys<br/>ARC1_API_KEYS]
             OIDC[OIDC/JWT Validator<br/>EntraID · Cognito · Keycloak]
             PRM[RFC 9728 Metadata<br/>/.well-known/oauth-protected-resource]
         end
@@ -166,14 +166,14 @@ arc-1/
 │   │   ├── logger.ts               # Structured logger (stderr only)
 │   │   └── types.ts                # ServerConfig type, defaults
 │   ├── handlers/
-│   │   ├── intent.ts               # 11 intent-based tool router (handleToolCall)
+│   │   ├── intent.ts               # 12 intent-based tool router (handleToolCall)
 │   │   └── tools.ts                # Tool definitions (names, descriptions, schemas)
 │   ├── adt/
 │   │   ├── client.ts               # ADT client facade (all read operations)
 │   │   ├── http.ts                 # HTTP transport (undici/fetch, discovery MIME, CSRF, cookies, sessions)
 │   │   ├── discovery.ts            # ADT service discovery parser/lookup for MIME negotiation
 │   │   ├── errors.ts               # Typed error classes (AdtApiError, AdtSafetyError)
-│   │   ├── safety.ts               # Safety system (read-only, op filter, pkg filter)
+│   │   ├── safety.ts               # Safety system (positive opt-ins, package gates, deny actions)
 │   │   ├── features.ts             # Feature detection (auto/on/off)
 │   │   ├── config.ts               # ADT client configuration types
 │   │   ├── types.ts                # ADT response types
@@ -212,7 +212,7 @@ ARC-1 supports two independent authentication layers:
 flowchart TD
     Request[Incoming Request] --> MCPAuth{MCP Client Auth?}
 
-    MCPAuth -->|API Key| APIKey[ARC1_API_KEY header check]
+    MCPAuth -->|API Key| APIKey[ARC1_API_KEYS profile check]
     MCPAuth -->|OAuth/OIDC| OIDC[JWT Validation<br/>via IdP JWKS]
     MCPAuth -->|None| NoAuth[No client auth<br/>local/trusted network]
 

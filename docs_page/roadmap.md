@@ -120,7 +120,7 @@ SORT RULES for this table — DO NOT BREAK when adding rows:
 | — | SAPManage Scope Split + Data Preview Diagnostics (PR #171) | 2026-04-19 | Security |
 | [DOC-05](#doc-05) | First-Party Skill Pack Expansion (clean-core ATC, dead code, object documenter) (PR #164) | 2026-04-19 | Docs |
 | [DOC-04](#doc-04) | RAP & Common ABAP Workflow Skill Pack Refresh | 2026-04-18 | Docs |
-| [FEAT-22](#feat-22) | gCTS/abapGit Integration (`SAPGit` tool + `--enable-git` safety gate) | 2026-04-18 | Features |
+| [FEAT-22](#feat-22) | gCTS/abapGit Integration (`SAPGit` tool + `--allow-git-writes` safety gate) | 2026-04-18 | Features |
 | SEC-09 | Auth Safety & Configurability (cookie→PP leak fix, applyAuthHeader guard, fail-fast validation, auth summary log, SAML disable opt-in, HTML login detection) | 2026-04-17 | Security |
 | [FEAT-20](#feat-20) | Source Version / Revision History | 2026-04-17 | Features |
 | [FEAT-49](#feat-49) | Object Transport History (Reverse Lookup) | 2026-04-17 | Features |
@@ -221,7 +221,7 @@ SORT RULES for this table — DO NOT BREAK when adding rows:
 > - `SAPRead(type="VERSIONS" | "VERSION_SOURCE")` (FEAT-20, 2026-04-17) is live on on-prem; BTP exposure intentionally deferred.
 > - `SAPTransport(action="history")` (FEAT-49, 2026-04-17) is live with `transportchecks` fallback.
 > - `SAPDiagnose` now covers dumps + traces + system_messages + gateway_errors + quickfix + apply_quickfix (FEAT-55, 2026-04-21). SQL trace (FEAT-09) is the only fr0ster-v5 diagnostic still missing.
-> - `SAPGit` (FEAT-22, 2026-04-18) auto-selects gCTS→abapGit with a `--enable-git` safety gate; VSP's gCTS lead is closed for the prioritized workflow set.
+> - `SAPGit` (FEAT-22, 2026-04-18) auto-selects gCTS→abapGit with a `--allow-git-writes` safety gate; VSP's gCTS lead is closed for the prioritized workflow set.
 >
 > Competitor scan (2026-04-23): only **fr0ster** has moved this week — v6.2.0 shipped per-object-type tool descriptions (13 types) and v6.4.0 added per-instance `systemType` on `EmbeddableMcpServer` (multi-tenant embedding capability ARC-1 lacks — tracked as FEAT-59). VSP, dassian-adt, mario, AWS Accelerator all quiet since before 2026-04-17.
 >
@@ -798,7 +798,7 @@ Note: The `/enhancements/elements` endpoint is **on-prem only** (SAP BTP ABAP Cl
 **What was delivered:**
 - New `SAPGit` intent tool with backend auto-selection (prefers gCTS, falls back to abapGit).
 - New backend clients: `src/adt/gcts.ts` (JSON `/sap/bc/cts_abapvcs/*`) and `src/adt/abapgit.ts` (XML/HATEOAS `/sap/bc/adt/abapgit/*`).
-- New safety gate `--enable-git` / `SAP_ENABLE_GIT` (default `false`) for all git write operations.
+- New safety gate `--allow-git-writes` / `SAP_ALLOW_GIT_WRITES` (default `false`) for all git write operations.
 - Feature probing extended with gCTS detection; tool registration is feature-gated.
 - End-to-end coverage added (unit + integration + e2e for SAPGit read paths and safety behavior).
 
@@ -835,7 +835,7 @@ For FUGR (function groups), the same pattern applies with `objecttype=FUGR/P` an
 
 **Why:** Simplifies reading programs with many includes — reduces N+1 round trips. fr0ster has `GetProgFullCode`. Useful for LLMs working with large legacy programs that heavily use includes (a very common pattern in ECC/on-prem codebases).
 
-**Why not:** `SAPContext` with dependency extraction already resolves includes and returns combined context with AST-based compression (7-30x reduction). A dedicated "full code" tool just renames existing functionality without adding behavior — it violates the 11-tool design principle. The LLM can already request `SAPRead PROG` followed by individual includes if needed. **On-prem only** (SAP BTP doesn't expose nodestructure for includes), so BTP users get no benefit. The recursive traversal is fragile — malformed INCLUDE statements or circular dependencies cause infinite loops.
+**Why not:** `SAPContext` with dependency extraction already resolves includes and returns combined context with AST-based compression (7-30x reduction). A dedicated "full code" tool just renames existing functionality without adding behavior — it violates the 12-tool design principle. The LLM can already request `SAPRead PROG` followed by individual includes if needed. **On-prem only** (SAP BTP doesn't expose nodestructure for includes), so BTP users get no benefit. The recursive traversal is fragile — malformed INCLUDE statements or circular dependencies cause infinite loops.
 
 ---
 
@@ -1195,6 +1195,22 @@ For FUGR (function groups), the same pattern applies with `objecttype=FUGR/P` an
 
 ---
 
+<a id="doc-05"></a>
+### DOC-05: First-Party Skill Pack Expansion
+| Field | Value |
+|-------|-------|
+| **Priority** | P1 |
+| **Effort** | S (1-2 days) |
+| **Risk** | Low |
+| **Usefulness** | High — turns ARC-1 primitives into repeatable clean-core and documentation workflows |
+| **Status** | Completed (2026-04-19, PR #164) |
+
+**What:** Added first-party skills for clean-core ATC review, unused-code detection, and object documentation capture.
+
+**Why:** These workflows use ARC-1's existing diagnostics, context, transport, linting, and documentation tools to solve repeatable ABAP maintenance tasks without adding more raw MCP endpoints.
+
+---
+
 <a id="feat-37"></a>
 ### FEAT-37: DCL (Access Control) Read/Write
 | Field | Value |
@@ -1293,7 +1309,7 @@ For FUGR (function groups), the same pattern applies with `objecttype=FUGR/P` an
 - `src/adt/flp.ts` — OData client for PAGE_BUILDER_CUST with double-JSON tile config handling
 - SAPManage actions: `flp_list_catalogs`, `flp_list_groups`, `flp_list_tiles`, `flp_create_catalog`, `flp_create_group`, `flp_create_tile`, `flp_add_tile_to_group`, `flp_delete_catalog`
 - Feature-gated via `featureFlp` config (auto-probed at startup)
-- Write ops use `OperationType.Workflow` — blocked by `readOnly: true`
+- Write ops use `OperationType.Workflow` — blocked unless `SAP_ALLOW_WRITES=true`
 - Graceful ASSERTION_FAILED handling for problematic catalogs
 
 ---
@@ -1573,7 +1589,7 @@ For FUGR (function groups), the same pattern applies with `objecttype=FUGR/P` an
    - Then resolve task→request hierarchy via E070, optionally map to CR via E070A
    - Source: VSP `handleCRHistory` in `handlers_transport_analysis.go`
    - **Only way to get full transport history** — ADT REST endpoints only return current assignments
-   - Requires `blockFreeSQL=false` or data preview access to E071/E070
+   - Requires `SAP_ALLOW_FREE_SQL=true` or data preview access to E071/E070
 
 **Implementation summary (completed):**
 - Added `SAPTransport(action="history", type, name)` in `handleSAPTransport`.
@@ -1769,7 +1785,7 @@ For FUGR (function groups), the same pattern applies with `objecttype=FUGR/P` an
 
 **Why:** Customers with mixed landscapes (dev BTP + prod on-prem + sandbox ECC) want one MCP endpoint per environment, not one per SAP system. fr0ster's v6.4.0 EmbeddableMcpServer pattern is the reference implementation. Principal Propagation already handles per-user identity; per-instance would handle per-system routing.
 
-**Why not:** ARC-1's safety config is global (`readOnly`, `allowedPackages`, etc.) — multi-tenant requires per-tenant safety gates or a consistent profile per SAP system. Also overlaps with the existing Destination Service pattern on BTP. Likely best implemented as a thin router in front of existing per-system instances rather than rebuilding the core. Reconsider when a customer explicitly asks.
+**Why not:** ARC-1's safety config is global (`allowWrites`, `allowedPackages`, etc.) — multi-tenant requires per-tenant safety gates or a consistent profile per SAP system. Also overlaps with the existing Destination Service pattern on BTP. Likely best implemented as a thin router in front of existing per-system instances rather than rebuilding the core. Reconsider when a customer explicitly asks.
 
 ---
 
@@ -1956,7 +1972,7 @@ The following features are tracked but not planned for near-term implementation.
 | **Status** | Complete via scope enforcement (2026-03-27) |
 
 **Implemented (2026-03-27):**
-- `TOOL_SCOPES` map in `src/handlers/intent.ts` — each tool requires a scope (read/write/admin)
+- `ACTION_POLICY` map in `src/authz/policy.ts` — each tool/action requires a scope
 - Scope enforcement in `handleToolCall()` — checks `authInfo.scopes` before executing any tool
 - `ListTools` filtering in `src/server/server.ts` — users only see tools they have scopes for
 - XSUAA role collections (ARC-1 Viewer/Editor/Admin) map to scopes via `xs-security.json`
@@ -2138,9 +2154,9 @@ Based on independent security review against RFC 9700 (reports/2026-04-08-001-oa
 |------|--------|
 | TypeScript Migration | Complete — Go code removed, pure TypeScript |
 | Core MCP Server | 12 intent-based tools + hyperfocused mode (1 tool), HTTP Streamable + stdio |
-| Safety System | Read-only, package filter (default: `$TMP`), operation filter, transport guard, dry-run |
+| Safety System | Positive opt-in gates (`allowWrites`, SQL/data/transport/Git), package filter (default: `$TMP`), deny-actions |
 | Input Validation | Zod v4 runtime validation for all MCP tool inputs (v0.5.0) |
-| Phase 1: API Key Auth | `ARC1_API_KEY` Bearer token + multi-key profiles |
+| Phase 1: API Key Auth | `ARC1_API_KEYS` Bearer tokens with profiles |
 | Phase 2: OAuth/OIDC (Entra ID) | JWT validation via `jose` library, tested with Copilot Studio |
 | Phase 4: BTP CF Deployment | Docker on CF with Destination Service + Cloud Connector |
 | BTP Destination Service | Auto-resolves SAP credentials from BTP Destination at startup |
@@ -2178,7 +2194,7 @@ Based on independent security review against RFC 9700 (reports/2026-04-08-001-oa
 |-------|-------------|--------|
 | Go v1.x-v2.32 | ADT client, 40+ tools, CRUD, debugging, WebSocket, Lua scripting | Complete (Go) |
 | Enterprise Rename | vsp -> ARC-1, intent-based tool architecture (now 12 tools) | Complete |
-| Auth Phase 1: API Key | `ARC1_API_KEY` Bearer token | Complete |
+| Auth Phase 1: API Key | `ARC1_API_KEYS` Bearer tokens with profiles | Complete |
 | Auth Phase 2: OAuth/OIDC | Entra ID JWT validation via `jose` library | Complete |
 | Auth Phase 4: BTP CF | Docker on CF with Destination Service + Cloud Connector | Complete |
 | TypeScript Migration | Full Go -> TypeScript port, Go code removed | Complete (2026-03-26) |
@@ -2217,7 +2233,7 @@ Based on independent security review against RFC 9700 (reports/2026-04-08-001-oa
 
 | Competitor | Language | Tools | Auth | Safety | Deployment | Key Advantage |
 |-----------|---------|-------|------|--------|------------|---------------|
-| **ARC-1** | TypeScript | 12 intent-based + hyperfocused | API Key, OIDC, XSUAA, PP | Read-only, pkg filter, op filter, 2D auth (scopes+roles+safety) | Docker, BTP CF, npm | Per-user PP, scope-based tools, 3 auth modes, safety, 1,500+ tests across unit/integration/E2E |
+| **ARC-1** | TypeScript | 12 intent-based + hyperfocused | API Key, OIDC, XSUAA, PP | Read-only, pkg filter, deny actions, 3-layer auth (server ceiling + user scopes + SAP auth) | Docker, BTP CF, npm | Per-user PP, scope-based tools, 3 auth modes, safety, 1,500+ tests across unit/integration/E2E |
 | **vibing-steampunk** | Go 1.24 | 1-99+ (3 modes) | Basic, Cookie | Op filter, pkg filter, transport guard | Go binary (9 platforms) | 279 stars, **Streamable HTTP (v2.38.0)**, native parser, massive feature sprint (i18n, gCTS, API release state, version history, code coverage) |
 | **fr0ster/mcp-abap-adt** | TypeScript | ~320 (4 tiers) | 9 providers (incl. TLS, SAML, Device Flow) | Exposition tiers | npm `@mcp-abap-adt/core` | Most tools, most auth options, embeddable, RFC, multi-system |
 | SAP ABAP Add-on MCP | ABAP | ~10 | SAP native | SAP authorization | Runs inside SAP | No proxy needed, SAP-native auth |

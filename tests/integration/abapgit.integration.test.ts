@@ -58,15 +58,15 @@ describe('abapGit ADT bridge integration', () => {
     }
   });
 
-  it('createRepo is blocked when enableGit=false', async (ctx) => {
+  it('createRepo is blocked when allowGitWrites=false', async (ctx) => {
     requireOrSkip(ctx, abapGitAvailable ? true : undefined, SkipReason.BACKEND_UNSUPPORTED);
-    const noGitSafety = { ...unrestrictedSafetyConfig(), enableGit: false };
+    const noGitSafety = { ...unrestrictedSafetyConfig(), allowGitWrites: false };
     await expect(
       createRepo(client.http, noGitSafety, {
         package: '$TMP',
         url: 'https://github.com/example/repo.git',
       }),
-    ).rejects.toThrow(/Git operation/);
+    ).rejects.toThrow(/Git write 'clone' is blocked: allowGitWrites=false/);
   });
 
   it('checkRepo succeeds or fails quickly without hanging', async (ctx) => {
