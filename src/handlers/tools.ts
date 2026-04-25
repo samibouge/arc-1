@@ -63,7 +63,6 @@ const WRITE_RELEASE_GATES: Record<string, number> = {
 const ACTION_RELEASE_GATES: Record<string, number> = {
   publish_srvb: 754,
   unpublish_srvb: 754,
-  change_package: 754,
 };
 
 function parseReleaseNum(resolvedFeatures?: ResolvedFeatures): number {

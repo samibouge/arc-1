@@ -1351,10 +1351,6 @@ const ACTION_RELEASE_GATES: Record<string, ReleaseGate> = {
     minRelease: 754,
     hint: 'Service binding unpublishing is not available on this system. Requires SAP_BASIS >= 7.54.',
   },
-  change_package: {
-    minRelease: 754,
-    hint: 'Package reassignment (change_package) is not available on this system. Use SE80 or SE03 instead.',
-  },
 };
 
 /** Parse abapRelease string to a numeric value (e.g. "750" → 750, "7.54" → 754). */
