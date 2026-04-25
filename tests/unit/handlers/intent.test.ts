@@ -2232,6 +2232,151 @@ ENDCLASS.`,
       }
     });
 
+    it('adds CDS downstream impact guidance after DDLS update', async () => {
+      mockFetch.mockReset();
+      const whereUsedXml = `<?xml version="1.0" encoding="utf-8"?>
+<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences">
+  <usageReferences:referencedObjects>
+    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/ddl/sources/zi_child_one" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_CHILD_ONE" adtcore:type="DDLS/DF" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/ddl/sources/zi_child_two" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_CHILD_TWO" adtcore:type="DDLS/DF" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+    <usageReferences:referencedObject uri="/sap/bc/adt/bo/behaviordefinitions/ZI_ROOT" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_ROOT" adtcore:type="BDEF/BO" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/srvd/sources/ZSD_ROOT" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZSD_ROOT" adtcore:type="SRVD/SRV" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+  </usageReferences:referencedObjects>
+</usageReferences:usageReferenceResult>`;
+
+      mockFetch.mockImplementation((url: string | URL, opts?: { method?: string }) => {
+        const method = (opts?.method ?? 'GET').toUpperCase();
+        const urlStr = String(url);
+        if (method === 'POST' && urlStr.includes('_action=LOCK')) {
+          return Promise.resolve(
+            mockResponse(200, '<asx:values><LOCK_HANDLE>LH_DDLS</LOCK_HANDLE><CORRNR></CORRNR></asx:values>', {
+              'x-csrf-token': 'T',
+            }),
+          );
+        }
+        if (method === 'POST' && urlStr.includes('/sap/bc/adt/repository/informationsystem/usageReferences?uri=')) {
+          return Promise.resolve(mockResponse(200, whereUsedXml, { 'x-csrf-token': 'T' }));
+        }
+        return Promise.resolve(mockResponse(200, '<ok/>', { 'x-csrf-token': 'T' }));
+      });
+
+      const config = { ...DEFAULT_CONFIG, lintBeforeWrite: false };
+      const result = await handleToolCall(createClient(), config, 'SAPWrite', {
+        action: 'update',
+        type: 'DDLS',
+        name: 'ZI_ROOT',
+        source: `define view entity ZI_ROOT as select from ztab { key id, name }`,
+      });
+
+      expect(result.isError).toBeUndefined();
+      const text = result.content[0]!.text;
+      expect(text).toContain('Successfully updated DDLS ZI_ROOT');
+      expect(text).toContain('CDS update follow-up for ZI_ROOT');
+      expect(text).toContain('ZI_CHILD_ONE');
+      expect(text).toContain('ZI_CHILD_TWO');
+      expect(text).toContain('ZSD_ROOT');
+      expect(text).toContain('SAPActivate(type="DDLS", name="ZI_ROOT")');
+      expect(text).toContain('Suggested re-activation order: DDLS ZI_ROOT, DDLS ZI_CHILD_ONE, DDLS ZI_CHILD_TWO');
+      expect(text).toContain(
+        'Batch call template: SAPActivate(objects=[{type:"DDLS",name:"ZI_ROOT"}, {type:"DDLS",name:"ZI_CHILD_ONE"}',
+      );
+    });
+
+    it('supplements DDLS update guidance with scoped where-used results when unfiltered results are partial', async () => {
+      mockFetch.mockReset();
+      const scopeXml = `<?xml version="1.0" encoding="UTF-8"?>
+<usageReferences:scopeResponse xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences">
+  <usageReferences:objectType type="DDLS/DF" description="DDL Source" count="3"/>
+  <usageReferences:objectType type="BDEF/BO" description="Behavior Definition" count="1"/>
+</usageReferences:scopeResponse>`;
+      const unfilteredWhereUsedXml = `<?xml version="1.0" encoding="utf-8"?>
+<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences">
+  <usageReferences:referencedObjects>
+    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/ddl/sources/ZI_CHILD_ONE" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_CHILD_ONE" adtcore:type="DDLS/DF" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+  </usageReferences:referencedObjects>
+</usageReferences:usageReferenceResult>`;
+      const scopedDdlsWhereUsedXml = `<?xml version="1.0" encoding="utf-8"?>
+<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences">
+  <usageReferences:referencedObjects>
+    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/ddl/sources/zi_child_one" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_CHILD_ONE" adtcore:type="DDLS/DF" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/ddl/sources/zi_child_two" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_CHILD_TWO" adtcore:type="DDLS/DF" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/ddl/sources/zi_child_three" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_CHILD_THREE" adtcore:type="DDLS/DF" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+  </usageReferences:referencedObjects>
+</usageReferences:usageReferenceResult>`;
+      const scopedBdefWhereUsedXml = `<?xml version="1.0" encoding="utf-8"?>
+<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences">
+  <usageReferences:referencedObjects>
+    <usageReferences:referencedObject uri="/sap/bc/adt/bo/behaviordefinitions/ZI_ROOT" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_ROOT" adtcore:type="BDEF/BO" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+  </usageReferences:referencedObjects>
+</usageReferences:usageReferenceResult>`;
+
+      mockFetch.mockImplementation((url: string | URL, opts?: { method?: string; body?: string }) => {
+        const method = (opts?.method ?? 'GET').toUpperCase();
+        const urlStr = String(url);
+        const body = String(opts?.body ?? '');
+        if (method === 'POST' && urlStr.includes('_action=LOCK')) {
+          return Promise.resolve(
+            mockResponse(200, '<asx:values><LOCK_HANDLE>LH_DDLS</LOCK_HANDLE><CORRNR></CORRNR></asx:values>', {
+              'x-csrf-token': 'T',
+            }),
+          );
+        }
+        if (method === 'POST' && urlStr.includes('/usageReferences/scope')) {
+          return Promise.resolve(mockResponse(200, scopeXml, { 'x-csrf-token': 'T' }));
+        }
+        if (method === 'POST' && urlStr.includes('/sap/bc/adt/repository/informationsystem/usageReferences?uri=')) {
+          if (body.includes('objectTypeFilter value="DDLS/DF"')) {
+            return Promise.resolve(mockResponse(200, scopedDdlsWhereUsedXml, { 'x-csrf-token': 'T' }));
+          }
+          if (body.includes('objectTypeFilter value="BDEF/BO"')) {
+            return Promise.resolve(mockResponse(200, scopedBdefWhereUsedXml, { 'x-csrf-token': 'T' }));
+          }
+          return Promise.resolve(mockResponse(200, unfilteredWhereUsedXml, { 'x-csrf-token': 'T' }));
+        }
+        return Promise.resolve(mockResponse(200, '<ok/>', { 'x-csrf-token': 'T' }));
+      });
+
+      const config = { ...DEFAULT_CONFIG, lintBeforeWrite: false };
+      const result = await handleToolCall(createClient(), config, 'SAPWrite', {
+        action: 'update',
+        type: 'DDLS',
+        name: 'ZI_ROOT',
+        source: `define view entity ZI_ROOT as select from ztab { key id, name }`,
+      });
+
+      expect(result.isError).toBeUndefined();
+      const text = result.content[0]!.text;
+      expect(text).toContain('ZI_CHILD_ONE');
+      expect(text).toContain('ZI_CHILD_TWO');
+      expect(text).toContain('ZI_CHILD_THREE');
+      expect(text).toContain('BDEF ZI_ROOT');
+      expect(text).toContain('Downstream consumers in ADT where-used index: 4');
+
+      const usageBodies = mockFetch.mock.calls
+        .map((call) => String((call[1] as { body?: string } | undefined)?.body ?? ''))
+        .filter((body) => body.includes('usageReferenceRequest'));
+      expect(usageBodies.some((body) => body.includes('objectTypeFilter value="DDLS/DF"'))).toBe(true);
+      expect(usageBodies.some((body) => body.includes('objectTypeFilter value="BDEF/BO"'))).toBe(true);
+    });
+
     it('still skips BDEF for pre-write lint', async () => {
       const config = { ...DEFAULT_CONFIG, lintBeforeWrite: true };
       const result = await handleToolCall(createClient(), config, 'SAPWrite', {
@@ -3716,6 +3861,57 @@ ENDCLASS.`;
       expect(result.content[0]?.text).toContain('[line 42]');
       expect(result.content[0]?.text).toContain('Type ZI_TRAVEL is not active');
       expect(result.content[0]?.text).toContain('/sap/bc/adt/ddic/ddl/sources/zi_travel');
+    });
+
+    it('adds downstream dependency guidance when DDLS activation fails', async () => {
+      const activationXml = `<messages>
+        <msg type="E" severity="error" shortText="Element NAME does not exist in dependent projection" line="12"/>
+      </messages>`;
+      const whereUsedXml = `<?xml version="1.0" encoding="utf-8"?>
+<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences">
+  <usageReferences:referencedObjects>
+    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/ddl/sources/zi_child_one" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_CHILD_ONE" adtcore:type="DDLS/DF" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+    <usageReferences:referencedObject uri="/sap/bc/adt/bo/behaviordefinitions/ZI_ROOT" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_ROOT" adtcore:type="BDEF/BO" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/srvd/sources/ZSD_ROOT" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZSD_ROOT" adtcore:type="SRVD/SRV" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+  </usageReferences:referencedObjects>
+</usageReferences:usageReferenceResult>`;
+
+      mockFetch.mockReset();
+      mockFetch.mockImplementation((url: string | URL, opts?: { method?: string }) => {
+        const method = (opts?.method ?? 'GET').toUpperCase();
+        const urlStr = String(url);
+        if (method === 'POST' && urlStr.includes('/sap/bc/adt/activation?method=activate')) {
+          return Promise.resolve(mockResponse(200, activationXml, { 'x-csrf-token': 'T' }));
+        }
+        if (method === 'POST' && urlStr.includes('/sap/bc/adt/repository/informationsystem/usageReferences?uri=')) {
+          return Promise.resolve(mockResponse(200, whereUsedXml, { 'x-csrf-token': 'T' }));
+        }
+        return Promise.resolve(mockResponse(200, '', { 'x-csrf-token': 'T' }));
+      });
+
+      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPActivate', {
+        type: 'DDLS',
+        name: 'ZI_ROOT',
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0]!.text;
+      expect(text).toContain('Activation failed for DDLS ZI_ROOT');
+      expect(text).toContain('CDS activation impact for ZI_ROOT');
+      expect(text).toContain('ZI_CHILD_ONE');
+      expect(text).toContain('ZSD_ROOT');
+      expect(text).toContain(
+        'Suggested re-activation order: DDLS ZI_ROOT, DDLS ZI_CHILD_ONE, BDEF ZI_ROOT, SRVD ZSD_ROOT',
+      );
+      expect(text).toContain(
+        'Batch call template: SAPActivate(objects=[{type:"DDLS",name:"ZI_ROOT"}, {type:"DDLS",name:"ZI_CHILD_ONE"}, {type:"BDEF",name:"ZI_ROOT"}, {type:"SRVD",name:"ZSD_ROOT"}])',
+      );
     });
 
     it('shows warnings on successful activation', async () => {
@@ -7708,6 +7904,207 @@ ENDCLASS.`;
 
       expect(result.isError).toBeUndefined();
       expect(result.content[0]?.text).toContain('Deleted PROG ZTEST');
+    });
+  });
+
+  describe('SAPWrite delete dependency diagnostics', () => {
+    it('enriches DDLS delete [?/039] errors with where-used dependents', async () => {
+      const lockBody =
+        '<asx:abap xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><LOCK_HANDLE>DLH1</LOCK_HANDLE><CORRNR></CORRNR><IS_LOCAL>X</IS_LOCAL></DATA></asx:values></asx:abap>';
+      const deleteErrorXml = `<?xml version="1.0" encoding="utf-8"?>
+<exc:exception xmlns:exc="http://www.sap.com/abapxml/types/communicationframework">
+  <exc:localizedMessage lang="EN">DDL source ZI_ROOT could not be deleted</exc:localizedMessage>
+  <exc:properties>
+    <entry key="T100KEY-NO">039</entry>
+    <entry key="T100KEY-V1">ZI_ROOT</entry>
+  </exc:properties>
+</exc:exception>`;
+      const whereUsedXml = `<?xml version="1.0" encoding="utf-8"?>
+<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences">
+  <usageReferences:referencedObjects>
+    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/ddl/sources/zi_child_one" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_CHILD_ONE" adtcore:type="DDLS/DF" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+    <usageReferences:referencedObject uri="/sap/bc/adt/ddic/ddl/sources/zi_child_two" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_CHILD_TWO" adtcore:type="DDLS/DF" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+    <usageReferences:referencedObject uri="/sap/bc/adt/bo/behaviordefinitions/ZI_ROOT" isResult="true" canHaveChildren="false" usageInformation="gradeDirect,includeProductive">
+      <usageReferences:adtObject adtcore:name="ZI_ROOT" adtcore:type="BDEF/BO" xmlns:adtcore="http://www.sap.com/adt/core"/>
+    </usageReferences:referencedObject>
+  </usageReferences:referencedObjects>
+</usageReferences:usageReferenceResult>`;
+
+      mockFetch.mockReset();
+      mockFetch.mockImplementation((url: string | URL, opts?: { method?: string }) => {
+        const method = (opts?.method ?? 'GET').toUpperCase();
+        const urlStr = String(url);
+        if (method === 'POST' && urlStr.includes('_action=LOCK')) {
+          return Promise.resolve(mockResponse(200, lockBody, { 'x-csrf-token': 'T' }));
+        }
+        if (method === 'DELETE' && urlStr.includes('/sap/bc/adt/ddic/ddl/sources/ZI_ROOT')) {
+          return Promise.resolve(mockResponse(400, deleteErrorXml, { 'x-csrf-token': 'T' }));
+        }
+        if (method === 'POST' && urlStr.includes('/sap/bc/adt/repository/informationsystem/usageReferences?uri=')) {
+          return Promise.resolve(mockResponse(200, whereUsedXml, { 'x-csrf-token': 'T' }));
+        }
+        return Promise.resolve(mockResponse(200, '', { 'x-csrf-token': 'T' }));
+      });
+
+      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPWrite', {
+        action: 'delete',
+        type: 'DDLS',
+        name: 'ZI_ROOT',
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0]!.text;
+      expect(text).toContain('could not be deleted');
+      expect(text).toContain('Blocking dependents for DDLS ZI_ROOT');
+      expect(text).toContain('ZI_CHILD_ONE');
+      expect(text).toContain('ZI_CHILD_TWO');
+      expect(text).toContain(
+        'Suggested delete order: BDEF ZI_ROOT, DDLS ZI_CHILD_ONE, DDLS ZI_CHILD_TWO, then DDLS ZI_ROOT.',
+      );
+      expect(text).toContain('If the listed dependents were just deleted, wait briefly and retry');
+      expect(text).toContain('activate first');
+
+      // Remediation-first ordering: DDIC diagnostics come BEFORE the blocker hint
+      // so the LLM sees the raw SAP error → structured diagnostics → remediation.
+      const diagnosticsIdx = text.indexOf('DDIC diagnostics:');
+      const blockerIdx = text.indexOf('Blocking dependents');
+      expect(diagnosticsIdx).toBeGreaterThan(-1);
+      expect(blockerIdx).toBeGreaterThan(diagnosticsIdx);
+
+      // The [?/039] T100 key must appear in the diagnostics block (not replaced
+      // or shadowed by the blocker hint) — this is the SAP error code that
+      // links back to the actual message in SE91.
+      expect(text).toContain('[?/039]');
+
+      // The generic "DDIC save failed" hint must NOT fire on delete — it's a
+      // save-action remediation ("check annotations, fix field types") that
+      // would mislead an LLM into rewriting the DDLS source instead of
+      // resolving the dependency chain.
+      expect(text).not.toContain('DDIC save failed');
+      expect(text).not.toContain('@AbapCatalog annotations');
+    });
+
+    it('adds stale-dependency guidance when DDLS delete [?/039] has no current where-used blockers', async () => {
+      const lockBody =
+        '<asx:abap xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><LOCK_HANDLE>DLH1</LOCK_HANDLE><CORRNR></CORRNR><IS_LOCAL>X</IS_LOCAL></DATA></asx:values></asx:abap>';
+      const deleteErrorXml = `<?xml version="1.0" encoding="utf-8"?>
+<exc:exception xmlns:exc="http://www.sap.com/abapxml/types/communicationframework">
+  <exc:localizedMessage lang="EN">DDL source ZI_ROOT could not be deleted</exc:localizedMessage>
+  <exc:properties>
+    <entry key="T100KEY-NO">039</entry>
+    <entry key="T100KEY-V1">ZI_ROOT</entry>
+  </exc:properties>
+</exc:exception>`;
+      const emptyWhereUsedXml = `<?xml version="1.0" encoding="utf-8"?>
+<usageReferences:usageReferenceResult xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences">
+  <usageReferences:referencedObjects/>
+</usageReferences:usageReferenceResult>`;
+
+      mockFetch.mockReset();
+      mockFetch.mockImplementation((url: string | URL, opts?: { method?: string }) => {
+        const method = (opts?.method ?? 'GET').toUpperCase();
+        const urlStr = String(url);
+        if (method === 'POST' && urlStr.includes('_action=LOCK')) {
+          return Promise.resolve(mockResponse(200, lockBody, { 'x-csrf-token': 'T' }));
+        }
+        if (method === 'DELETE' && urlStr.includes('/sap/bc/adt/ddic/ddl/sources/ZI_ROOT')) {
+          return Promise.resolve(mockResponse(400, deleteErrorXml, { 'x-csrf-token': 'T' }));
+        }
+        if (method === 'POST' && urlStr.includes('/sap/bc/adt/repository/informationsystem/usageReferences?uri=')) {
+          return Promise.resolve(mockResponse(200, emptyWhereUsedXml, { 'x-csrf-token': 'T' }));
+        }
+        return Promise.resolve(mockResponse(200, '', { 'x-csrf-token': 'T' }));
+      });
+
+      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPWrite', {
+        action: 'delete',
+        type: 'DDLS',
+        name: 'ZI_ROOT',
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0]!.text;
+      expect(text).toContain('[?/039]');
+      expect(text).toContain('Delete dependency follow-up for DDLS ZI_ROOT');
+      expect(text).toContain('No current ADT where-used dependents were returned');
+      expect(text).toContain('wait briefly and retry');
+      expect(text).toContain('SAPActivate(type="DDLS", name="ZI_ROOT")');
+      expect(text).toContain('SAPNavigate(action="references", type="DDLS", name="ZI_ROOT")');
+      expect(text).not.toContain('Blocking dependents for DDLS ZI_ROOT');
+      expect(text).not.toContain('DDIC save failed');
+      expect(text).not.toContain('@AbapCatalog annotations');
+    });
+
+    it('still shows the DDIC save hint for create failures (regression guard)', async () => {
+      // The delete fix narrowed the save hint to save actions; make sure we
+      // didn't accidentally suppress it for create/update/batch_create too.
+      const createErrorXml = `<?xml version="1.0" encoding="utf-8"?>
+<exc:exception xmlns:exc="http://www.sap.com/abapxml/types/communicationframework">
+  <exc:localizedMessage lang="EN">Can't save due to errors in source</exc:localizedMessage>
+  <exc:properties>
+    <entry key="T100KEY-MSGID">DDL</entry>
+    <entry key="T100KEY-MSGNO">001</entry>
+    <entry key="LINE">3</entry>
+  </exc:properties>
+</exc:exception>`;
+
+      mockFetch.mockReset();
+      mockFetch.mockImplementation((url: string | URL, opts?: { method?: string }) => {
+        const method = (opts?.method ?? 'GET').toUpperCase();
+        const urlStr = String(url);
+        if (method === 'POST' && urlStr.includes('/sap/bc/adt/ddic/ddl/sources')) {
+          return Promise.resolve(mockResponse(400, createErrorXml, { 'x-csrf-token': 'T' }));
+        }
+        return Promise.resolve(mockResponse(200, '', { 'x-csrf-token': 'T' }));
+      });
+
+      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPWrite', {
+        action: 'create',
+        type: 'DDLS',
+        name: 'ZI_BAD',
+        source: 'define view entity ZI_BAD as select from sflight {}',
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0]!.text;
+      expect(text).toContain('DDIC save failed');
+      expect(text).toContain('@AbapCatalog annotations');
+    });
+
+    it('does not mislabel write session failures as DDIC save failures', async () => {
+      const lockBody =
+        '<asx:abap xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><LOCK_HANDLE>DLH1</LOCK_HANDLE><CORRNR></CORRNR><IS_LOCAL>X</IS_LOCAL></DATA></asx:values></asx:abap>';
+
+      mockFetch.mockReset();
+      mockFetch.mockImplementation((url: string | URL, opts?: { method?: string }) => {
+        const method = (opts?.method ?? 'GET').toUpperCase();
+        const urlStr = String(url);
+        if (method === 'POST' && urlStr.includes('_action=LOCK')) {
+          return Promise.resolve(mockResponse(200, lockBody, { 'x-csrf-token': 'T' }));
+        }
+        if (method === 'POST' && urlStr.includes('_action=UNLOCK')) {
+          return Promise.resolve(mockResponse(400, 'Service cannot be reached', { 'x-csrf-token': 'T' }));
+        }
+        return Promise.resolve(mockResponse(200, '', { 'x-csrf-token': 'T' }));
+      });
+
+      const config = { ...DEFAULT_CONFIG, lintBeforeWrite: false };
+      const result = await handleToolCall(createClient(), config, 'SAPWrite', {
+        action: 'create',
+        type: 'DDLS',
+        name: 'ZI_UNLOCK_FAIL',
+        source: 'define view entity ZI_UNLOCK_FAIL as select from sflight { key carrid }',
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0]!.text;
+      expect(text).toContain('SAP ADT write/session infrastructure failed');
+      expect(text).not.toContain('DDIC save failed');
+      expect(text).not.toContain('@AbapCatalog annotations');
     });
   });
 
