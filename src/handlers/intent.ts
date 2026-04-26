@@ -1388,27 +1388,7 @@ async function handleSAPRead(
     return errorResult(releaseGateHint);
   }
 
-  // When version="active", fetch the active source directly via ?version=active
-  // for source-based types. Handled before the main switch to avoid per-case duplication.
-  const SOURCE_TYPES = new Set([
-    'PROG',
-    'CLAS',
-    'INTF',
-    'FUNC',
-    'INCL',
-    'DDLS',
-    'DCLS',
-    'DDLX',
-    'BDEF',
-    'SRVD',
-    'TABL',
-    'STRU',
-  ]);
-  if (sourceVersion && SOURCE_TYPES.has(type) && name) {
-    const srcUrl = sourceUrlForType(type, name);
-    const resp = await client.http.get(`${srcUrl}${srcUrl.includes('?') ? '&' : '?'}version=${sourceVersion}`);
-    return textResult(resp.body);
-  }
+  const versionOpts = sourceVersion ? { version: sourceVersion } : undefined;
 
   // Helper: get source with cache support, returns cache hit status
   const cachedGet = async (
@@ -1433,7 +1413,7 @@ async function handleSAPRead(
 
   switch (type) {
     case 'PROG': {
-      const { source, cacheHit } = await cachedGet('PROG', name, () => client.getProgram(name));
+      const { source, cacheHit } = await cachedGet('PROG', name, () => client.getProgram(name, versionOpts));
       return cachedTextResult(source, cacheHit);
     }
     case 'CLAS': {
@@ -1445,7 +1425,7 @@ async function handleSAPRead(
       const methodParam = args.method as string | undefined;
       if (methodParam && !args.include) {
         // Method-level read — fetch full source then extract (no cache indicator for derived results)
-        const { source: fullSource } = await cachedGet('CLAS', name, () => client.getClass(name));
+        const { source: fullSource } = await cachedGet('CLAS', name, () => client.getClass(name, versionOpts));
         const abaplintVer = cachedFeatures?.abapRelease
           ? mapSapReleaseToAbaplintVersion(cachedFeatures.abapRelease)
           : undefined;
@@ -1461,13 +1441,13 @@ async function handleSAPRead(
       }
       // Only cache the full merged source (no include param), not individual includes
       if (!args.include) {
-        const { source, cacheHit } = await cachedGet('CLAS', name, () => client.getClass(name));
+        const { source, cacheHit } = await cachedGet('CLAS', name, () => client.getClass(name, versionOpts));
         return cachedTextResult(source, cacheHit);
       }
-      return textResult(await client.getClass(name, args.include as string | undefined));
+      return textResult(await client.getClass(name, { include: args.include as string, ...versionOpts }));
     }
     case 'INTF': {
-      const { source, cacheHit } = await cachedGet('INTF', name, () => client.getInterface(name));
+      const { source, cacheHit } = await cachedGet('INTF', name, () => client.getInterface(name, versionOpts));
       return cachedTextResult(source, cacheHit);
     }
     case 'FUNC': {
@@ -1484,21 +1464,20 @@ async function handleSAPRead(
         }
         group = resolved;
       }
-      const { source, cacheHit } = await cachedGet('FUNC', name, () => client.getFunction(group, name));
+      const { source, cacheHit } = await cachedGet('FUNC', name, () => client.getFunction(group, name, versionOpts));
       return cachedTextResult(source, cacheHit);
     }
     case 'FUGR': {
       const expand = Boolean(args.expand_includes);
       if (expand) {
-        const source = await client.getFunctionGroupSource(name);
-        // Match INCLUDE statements but skip ABAP comment lines (starting with *)
+        const source = await client.getFunctionGroupSource(name, versionOpts);
         const includePattern = /^[^*\n]*\bINCLUDE\s+(\S+)\s*\./gim;
         const parts: string[] = [`=== FUGR ${name} (main) ===\n${source}`];
         let m: RegExpExecArray | null;
         while ((m = includePattern.exec(source)) !== null) {
           const inclName = m[1]!;
           try {
-            const inclSource = await client.getInclude(inclName);
+            const inclSource = await client.getInclude(inclName, versionOpts);
             parts.push(`\n=== ${inclName} ===\n${inclSource}`);
           } catch {
             parts.push(`\n=== ${inclName} ===\n[Could not read include "${inclName}"]`);
@@ -1510,11 +1489,11 @@ async function handleSAPRead(
       return textResult(JSON.stringify(fg, null, 2));
     }
     case 'INCL': {
-      const { source, cacheHit } = await cachedGet('INCL', name, () => client.getInclude(name));
+      const { source, cacheHit } = await cachedGet('INCL', name, () => client.getInclude(name, versionOpts));
       return cachedTextResult(source, cacheHit);
     }
     case 'DDLS': {
-      const { source: ddlSource, cacheHit } = await cachedGet('DDLS', name, () => client.getDdls(name));
+      const { source: ddlSource, cacheHit } = await cachedGet('DDLS', name, () => client.getDdls(name, versionOpts));
       if (ddlSource.trim() === '') {
         return textResult(
           `DDLS ${name} exists in the object directory but has no source code stored. ` +
@@ -1522,26 +1501,25 @@ async function handleSAPRead(
         );
       }
       if ((args.include as string | undefined)?.toLowerCase() === 'elements') {
-        // Elements extraction is derived from source — no cache indicator
         return textResult(extractCdsElements(ddlSource, name));
       }
       return cachedTextResult(ddlSource, cacheHit);
     }
     case 'DCLS': {
-      const { source, cacheHit } = await cachedGet('DCLS', name, () => client.getDcl(name));
+      const { source, cacheHit } = await cachedGet('DCLS', name, () => client.getDcl(name, versionOpts));
       return cachedTextResult(source, cacheHit);
     }
     case 'BDEF': {
-      const { source, cacheHit } = await cachedGet('BDEF', name, () => client.getBdef(name));
+      const { source, cacheHit } = await cachedGet('BDEF', name, () => client.getBdef(name, versionOpts));
       return cachedTextResult(source, cacheHit);
     }
     case 'SRVD': {
-      const { source, cacheHit } = await cachedGet('SRVD', name, () => client.getSrvd(name));
+      const { source, cacheHit } = await cachedGet('SRVD', name, () => client.getSrvd(name, versionOpts));
       return cachedTextResult(source, cacheHit);
     }
     case 'DDLX': {
       try {
-        const { source, cacheHit } = await cachedGet('DDLX', name, () => client.getDdlx(name));
+        const { source, cacheHit } = await cachedGet('DDLX', name, () => client.getDdlx(name, versionOpts));
         return cachedTextResult(source, cacheHit);
       } catch (err) {
         if (isNotFoundError(err)) {
@@ -1573,16 +1551,18 @@ async function handleSAPRead(
       }
     }
     case 'TABL': {
-      const tablReader = isRelease750() ? () => client.getStructure(name) : () => client.getTable(name);
+      const tablReader = isRelease750()
+        ? () => client.getStructure(name, versionOpts)
+        : () => client.getTable(name, versionOpts);
       const { source, cacheHit } = await cachedGet('TABL', name, tablReader);
       return cachedTextResult(source, cacheHit);
     }
     case 'VIEW': {
-      const { source, cacheHit } = await cachedGet('VIEW', name, () => client.getView(name));
+      const { source, cacheHit } = await cachedGet('VIEW', name, () => client.getView(name, versionOpts));
       return cachedTextResult(source, cacheHit);
     }
     case 'STRU': {
-      const { source, cacheHit } = await cachedGet('STRU', name, () => client.getStructure(name));
+      const { source, cacheHit } = await cachedGet('STRU', name, () => client.getStructure(name, versionOpts));
       return cachedTextResult(source, cacheHit);
     }
     case 'DOMA': {

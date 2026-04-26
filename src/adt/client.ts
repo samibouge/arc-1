@@ -111,26 +111,32 @@ export class AdtClient {
 
   // ─── Source Code Read Operations ──────────────────────────────────
 
+  private queryParams(opts?: { version?: string }): Record<string, string> | undefined {
+    if (!opts?.version) return undefined;
+    return { version: opts.version };
+  }
+
   /** Get program source code */
-  async getProgram(name: string): Promise<string> {
+  async getProgram(name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetProgram');
-    const resp = await this.http.get(`/sap/bc/adt/programs/programs/${encodeURIComponent(name)}/source/main`);
+    const url = `/sap/bc/adt/programs/programs/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 
   /** Get class source code (main include by default) */
-  async getClass(name: string, include?: string): Promise<string> {
+  async getClass(name: string, opts?: { include?: string; version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetClass');
     const encodedName = encodeURIComponent(name);
 
-    if (!include) {
-      // Default: return full combined class source
-      const resp = await this.http.get(`/sap/bc/adt/oo/classes/${encodedName}/source/main`);
+    if (!opts?.include) {
+      const url = `/sap/bc/adt/oo/classes/${encodedName}/source/main`;
+      const resp = await this.http.get(url, undefined, this.queryParams(opts));
       return resp.body;
     }
 
     const validIncludes = new Set(['main', 'definitions', 'implementations', 'macros', 'testclasses']);
-    const includes = include
+    const includes = opts.include
       .split(',')
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean);
@@ -151,7 +157,7 @@ export class AdtClient {
           : `/sap/bc/adt/oo/classes/${encodedName}/includes/${inc}`;
 
       try {
-        const resp = await this.http.get(path);
+        const resp = await this.http.get(path, undefined, this.queryParams(opts));
         parts.push(`=== ${inc} ===\n${resp.body}`);
       } catch (err) {
         if (isNotFoundError(err)) {
@@ -159,7 +165,7 @@ export class AdtClient {
             `=== ${inc} ===\n[Include "${inc}" is not available for this class. Try reading without the include parameter to get the full source.]`,
           );
         } else {
-          throw err; // Re-throw non-404 errors
+          throw err;
         }
       }
     }
@@ -208,18 +214,18 @@ export class AdtClient {
   }
 
   /** Get interface source code */
-  async getInterface(name: string): Promise<string> {
+  async getInterface(name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetInterface');
-    const resp = await this.http.get(`/sap/bc/adt/oo/interfaces/${encodeURIComponent(name)}/source/main`);
+    const url = `/sap/bc/adt/oo/interfaces/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 
   /** Get function module source code */
-  async getFunction(group: string, name: string): Promise<string> {
+  async getFunction(group: string, name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetFunction');
-    const resp = await this.http.get(
-      `/sap/bc/adt/functions/groups/${encodeURIComponent(group)}/fmodules/${encodeURIComponent(name)}/source/main`,
-    );
+    const url = `/sap/bc/adt/functions/groups/${encodeURIComponent(group)}/fmodules/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 
@@ -243,44 +249,50 @@ export class AdtClient {
   }
 
   /** Get function group source code */
-  async getFunctionGroupSource(name: string): Promise<string> {
+  async getFunctionGroupSource(name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetFunctionGroupSource');
-    const resp = await this.http.get(`/sap/bc/adt/functions/groups/${encodeURIComponent(name)}/source/main`);
+    const url = `/sap/bc/adt/functions/groups/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 
   /** Get include source code */
-  async getInclude(name: string): Promise<string> {
+  async getInclude(name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetInclude');
-    const resp = await this.http.get(`/sap/bc/adt/programs/includes/${encodeURIComponent(name)}/source/main`);
+    const url = `/sap/bc/adt/programs/includes/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 
   /** Get CDS view source code (DDLS) */
-  async getDdls(name: string): Promise<string> {
+  async getDdls(name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetDDLS');
-    const resp = await this.http.get(`/sap/bc/adt/ddic/ddl/sources/${encodeURIComponent(name)}/source/main`);
+    const url = `/sap/bc/adt/ddic/ddl/sources/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 
   /** Get CDS access control source code (DCLS) */
-  async getDcl(name: string): Promise<string> {
+  async getDcl(name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetDCL');
-    const resp = await this.http.get(`/sap/bc/adt/acm/dcl/sources/${encodeURIComponent(name)}/source/main`);
+    const url = `/sap/bc/adt/acm/dcl/sources/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 
   /** Get behavior definition source code (BDEF) */
-  async getBdef(name: string): Promise<string> {
+  async getBdef(name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetBDEF');
-    const resp = await this.http.get(`/sap/bc/adt/bo/behaviordefinitions/${encodeURIComponent(name)}/source/main`);
+    const url = `/sap/bc/adt/bo/behaviordefinitions/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 
   /** Get service definition source code (SRVD) */
-  async getSrvd(name: string): Promise<string> {
+  async getSrvd(name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetSRVD');
-    const resp = await this.http.get(`/sap/bc/adt/ddic/srvd/sources/${encodeURIComponent(name)}/source/main`);
+    const url = `/sap/bc/adt/ddic/srvd/sources/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 
@@ -296,9 +308,10 @@ export class AdtClient {
   }
 
   /** Get metadata extension source code (DDLX) */
-  async getDdlx(name: string): Promise<string> {
+  async getDdlx(name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetDDLX');
-    const resp = await this.http.get(`/sap/bc/adt/ddic/ddlx/sources/${encodeURIComponent(name)}/source/main`);
+    const url = `/sap/bc/adt/ddic/ddlx/sources/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 
@@ -312,23 +325,26 @@ export class AdtClient {
   }
 
   /** Get table definition source code */
-  async getTable(name: string): Promise<string> {
+  async getTable(name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetTable');
-    const resp = await this.http.get(`/sap/bc/adt/ddic/tables/${encodeURIComponent(name)}/source/main`);
+    const url = `/sap/bc/adt/ddic/tables/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 
   /** Get view definition source code */
-  async getView(name: string): Promise<string> {
+  async getView(name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetView');
-    const resp = await this.http.get(`/sap/bc/adt/ddic/views/${encodeURIComponent(name)}/source/main`);
+    const url = `/sap/bc/adt/ddic/views/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 
   /** Get structure definition source code (CDS-like format) */
-  async getStructure(name: string): Promise<string> {
+  async getStructure(name: string, opts?: { version?: string }): Promise<string> {
     checkOperation(this.safety, OperationType.Read, 'GetStructure');
-    const resp = await this.http.get(`/sap/bc/adt/ddic/structures/${encodeURIComponent(name)}/source/main`);
+    const url = `/sap/bc/adt/ddic/structures/${encodeURIComponent(name)}/source/main`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
     return resp.body;
   }
 

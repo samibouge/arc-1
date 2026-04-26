@@ -92,6 +92,35 @@ describe('E2E SAPActivate failure path (PR #179 regression)', () => {
         console.log(`    update warning (continuing): ${text.slice(0, 200)}`);
       }
 
+      // 2b. Version-aware read: the inactive version must contain the written source,
+      //     while the active version should be empty (object was never activated).
+      const inactiveRead = await callTool(client, 'SAPRead', {
+        type: 'PROG',
+        name: progName,
+        version: 'inactive',
+      });
+      expectToolSuccess(inactiveRead);
+      const inactiveText = inactiveRead.content?.[0]?.text ?? '';
+      expect(inactiveText).toContain('zcl_arc1_does_not_exist');
+
+      const activeRead = await callTool(client, 'SAPRead', {
+        type: 'PROG',
+        name: progName,
+        version: 'active',
+      });
+      const activeText = activeRead.content?.[0]?.text ?? '';
+      // SAP quirk (confirmed on NW 7.50): even for a never-activated object,
+      // version=active returns a SAP-generated REPORT skeleton instead of empty:
+      //
+      //   *&---------------------------------------------------------------------*
+      //   *& Report ZARC1_E2E_ACTBROKE_XXXXXX
+      //   *&---------------------------------------------------------------------*
+      //   REPORT zarc1_e2e_actbroke_xxxxxx.
+      //
+      // The key assertion: this skeleton does NOT contain the broken source we
+      // wrote (zcl_arc1_does_not_exist), while the inactive version above does.
+      expect(activeText).not.toContain('zcl_arc1_does_not_exist');
+
       // 3. Activate. This is the key assertion — must return an error containing
       //    "Activation failed" (the LLM-facing failure marker) and the object name.
       const activateResult = await callTool(client, 'SAPActivate', {

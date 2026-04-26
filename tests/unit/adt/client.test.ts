@@ -58,13 +58,13 @@ describe('AdtClient', () => {
 
     it('getClass with include returns include source', async () => {
       const client = createClient();
-      const source = await client.getClass('ZCL_TEST', 'testclasses');
+      const source = await client.getClass('ZCL_TEST', { include: 'testclasses' });
       expect(typeof source).toBe('string');
     });
 
     it('getClass with include uses correct URL path (no /source/main suffix)', async () => {
       const client = createClient();
-      await client.getClass('ZCL_TEST', 'definitions');
+      await client.getClass('ZCL_TEST', { include: 'definitions' });
       // Find the call that includes ZCL_TEST in the URL
       const urls = mockFetch.mock.calls.map((c: any[]) => c[0] as string);
       const urlUsed = urls.find((u) => u.includes('ZCL_TEST'));
@@ -74,7 +74,7 @@ describe('AdtClient', () => {
 
     it('getClass with include=main uses /source/main path', async () => {
       const client = createClient();
-      await client.getClass('ZCL_TEST', 'main');
+      await client.getClass('ZCL_TEST', { include: 'main' });
       const urls = mockFetch.mock.calls.map((c: any[]) => c[0] as string);
       const urlUsed = urls.find((u) => u.includes('ZCL_TEST'));
       expect(urlUsed).toContain('/source/main');
@@ -82,7 +82,7 @@ describe('AdtClient', () => {
 
     it('getClass with multiple comma-separated includes', async () => {
       const client = createClient();
-      const source = await client.getClass('ZCL_TEST', 'definitions,implementations');
+      const source = await client.getClass('ZCL_TEST', { include: 'definitions,implementations' });
       // Should make two HTTP calls for includes
       const urls = mockFetch.mock.calls.map((c: any[]) => c[0] as string);
       const classUrls = urls.filter((u) => u.includes('ZCL_TEST'));
@@ -99,7 +99,7 @@ describe('AdtClient', () => {
       mockFetch.mockReset();
       mockFetch.mockRejectedValueOnce(new AdtApiError('Not found', 404, '/includes/testclasses'));
       const client = createClient();
-      const source = await client.getClass('ZCL_TEST', 'testclasses');
+      const source = await client.getClass('ZCL_TEST', { include: 'testclasses' });
       // Should not throw; should contain a helpful message
       expect(source).toContain('testclasses');
       expect(source).toContain('not available');
@@ -107,14 +107,14 @@ describe('AdtClient', () => {
 
     it('getClass validates include values', async () => {
       const client = createClient();
-      const source = await client.getClass('ZCL_TEST', 'foobar');
+      const source = await client.getClass('ZCL_TEST', { include: 'foobar' });
       expect(source).toContain('Unknown include');
       expect(source).toContain('foobar');
     });
 
     it('getClass normalizes include to lowercase', async () => {
       const client = createClient();
-      await client.getClass('ZCL_TEST', 'DEFINITIONS');
+      await client.getClass('ZCL_TEST', { include: 'DEFINITIONS' });
       const urls = mockFetch.mock.calls.map((c: any[]) => c[0] as string);
       const urlUsed = urls.find((u) => u.includes('ZCL_TEST'));
       // Should use lowercase 'definitions' in the URL path

@@ -191,8 +191,12 @@ export class AdtHttpClient {
   }
 
   /** GET request */
-  async get(path: string, headers?: Record<string, string>): Promise<AdtResponse> {
-    return this.request('GET', path, undefined, undefined, headers);
+  async get(
+    path: string,
+    headers?: Record<string, string>,
+    queryParams?: Record<string, string>,
+  ): Promise<AdtResponse> {
+    return this.request('GET', path, undefined, undefined, headers, queryParams);
   }
 
   /** HEAD request — lightweight probe, no response body */
@@ -248,11 +252,14 @@ export class AdtHttpClient {
     body?: string,
     contentType?: string,
     extraHeaders?: Record<string, string>,
+    queryParams?: Record<string, string>,
   ): Promise<AdtResponse> {
     if (this.config.semaphore) {
-      return this.config.semaphore.run(() => this.requestInner(method, path, body, contentType, extraHeaders));
+      return this.config.semaphore.run(() =>
+        this.requestInner(method, path, body, contentType, extraHeaders, queryParams),
+      );
     }
-    return this.requestInner(method, path, body, contentType, extraHeaders);
+    return this.requestInner(method, path, body, contentType, extraHeaders, queryParams);
   }
 
   /** Inner request method — CSRF, retries, content negotiation */
@@ -262,6 +269,7 @@ export class AdtHttpClient {
     body?: string,
     contentType?: string,
     extraHeaders?: Record<string, string>,
+    queryParams?: Record<string, string>,
   ): Promise<AdtResponse> {
     // Auto-fetch CSRF token for modifying requests
     if (isModifyingMethod(method) && !this.csrfToken) {
@@ -353,7 +361,7 @@ export class AdtHttpClient {
       headers['SAP-Connectivity-Authentication'] = this.config.sapConnectivityAuth;
     }
 
-    const url = this.buildUrl(path);
+    const url = this.buildUrl(path, queryParams);
     const httpStart = Date.now();
 
     // Per-request guards to prevent infinite retry loops
@@ -970,8 +978,8 @@ export class AdtHttpClient {
     }
   }
 
-  /** Build full URL with sap-client and sap-language query params */
-  private buildUrl(path: string): string {
+  /** Build full URL with sap-client, sap-language, and caller-supplied query params */
+  private buildUrl(path: string, queryParams?: Record<string, string>): string {
     const base = this.config.baseUrl.replace(/\/$/, '');
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
     const url = new URL(base + normalizedPath);
@@ -984,6 +992,11 @@ export class AdtHttpClient {
     }
     if (this.config.disableSaml) {
       url.searchParams.set('saml2', 'disabled');
+    }
+    if (queryParams) {
+      for (const [k, v] of Object.entries(queryParams)) {
+        url.searchParams.set(k, v);
+      }
     }
 
     return url.toString();
