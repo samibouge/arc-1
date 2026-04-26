@@ -172,6 +172,14 @@ export class AdtClient {
     return parts.join('\n\n');
   }
 
+  /** Get a single class include's raw source (testclasses, definitions, implementations, macros) */
+  async getClassInclude(name: string, include: string, opts?: { version?: string }): Promise<string> {
+    checkOperation(this.safety, OperationType.Read, 'GetClassInclude');
+    const url = `/sap/bc/adt/oo/classes/${encodeURIComponent(name)}/includes/${encodeURIComponent(include)}`;
+    const resp = await this.http.get(url, undefined, this.queryParams(opts));
+    return resp.body;
+  }
+
   /** Get class metadata (description, language, category, etc.) from the object endpoint */
   async getClassMetadata(name: string): Promise<ClassMetadata> {
     checkOperation(this.safety, OperationType.Read, 'GetClassMetadata');

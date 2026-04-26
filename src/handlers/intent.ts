@@ -146,13 +146,25 @@ import {
   releaseTransport,
   releaseTransportRecursive,
 } from '../adt/transport.js';
-import type { ClassHierarchy, DumpDetail, ObjectTransportHistory, ResolvedFeatures } from '../adt/types.js';
+import type {
+  ClassHierarchy,
+  ClassMetadata,
+  DumpDetail,
+  ObjectTransportHistory,
+  ResolvedFeatures,
+} from '../adt/types.js';
 import { getAppInfo } from '../adt/ui5-repository.js';
 import { validateAffHeader } from '../aff/validator.js';
 import type { CachingLayer } from '../cache/caching-layer.js';
 import { extractCdsDependencies, extractCdsElements } from '../context/cds-deps.js';
 import { compressCdsContext, compressContext } from '../context/compressor.js';
-import { extractMethod, formatMethodListing, listMethods, spliceMethod } from '../context/method-surgery.js';
+import {
+  extractMethod,
+  listMethods,
+  type MethodInfo,
+  spliceDefinition,
+  spliceMethod,
+} from '../context/method-surgery.js';
 import {
   buildLintConfig,
   type LintConfigOptions,
@@ -1414,40 +1426,71 @@ async function handleSAPRead(
   switch (type) {
     case 'PROG': {
       const { source, cacheHit } = await cachedGet('PROG', name, () => client.getProgram(name, versionOpts));
+      if (args.grep) return textResult(grepSource(source, args.grep as string));
       return cachedTextResult(source, cacheHit);
     }
     case 'CLAS': {
-      // Structured format: return JSON with metadata + decomposed source
-      if (args.format === 'structured') {
+      const methodParam = args.method as string | undefined;
+      const sectionParam = args.include as string | undefined;
+      const grepPattern = args.grep as string | undefined;
+      const abaplintVer = cachedFeatures?.abapRelease
+        ? mapSapReleaseToAbaplintVersion(cachedFeatures.abapRelease)
+        : undefined;
+
+      // format=full → complete source JSON (old structured behavior, discouraged)
+      if (args.format === 'full') {
         const structured = await client.getClassStructured(name);
         return textResult(JSON.stringify(structured, null, 2));
       }
-      const methodParam = args.method as string | undefined;
-      if (methodParam && !args.include) {
-        // Method-level read — fetch full source then extract (no cache indicator for derived results)
-        const { source: fullSource } = await cachedGet('CLAS', name, () => client.getClass(name, versionOpts));
-        const abaplintVer = cachedFeatures?.abapRelease
-          ? mapSapReleaseToAbaplintVersion(cachedFeatures.abapRelease)
-          : undefined;
-        if (methodParam === '*') {
-          const listing = listMethods(fullSource, name, abaplintVer);
-          return textResult(formatMethodListing(listing));
+
+      // Helper: fetch source for the requested section (main or a class-local include)
+      const fetchSection = async (): Promise<string> =>
+        !sectionParam || sectionParam === 'main'
+          ? (await cachedGet('CLAS', name, () => client.getClass(name, versionOpts))).source
+          : await client.getClassInclude(name, sectionParam, versionOpts);
+
+      // grep → server-side regex search within source (section-aware, method-annotated)
+      if (grepPattern) {
+        if (methodParam) {
+          return errorResult(
+            'Do not combine grep with method. Use grep to find code, then method="<name>" to read the full method.',
+          );
         }
-        const extracted = extractMethod(fullSource, name, methodParam, abaplintVer);
+        const source = await fetchSection();
+        const listing = listMethods(source, name, abaplintVer);
+        const methodRanges = listing.success ? listing.methods : undefined;
+        return textResult(
+          `[${name} section=${sectionParam ?? 'main'}]\n${grepSource(source, grepPattern, methodRanges)}`,
+        );
+      }
+
+      // method=<name> → surgical read from a specific section
+      if (methodParam && methodParam !== '*') {
+        const sectionSource = await fetchSection();
+        const listing = listMethods(sectionSource, name, abaplintVer);
+        const extracted = extractMethod(sectionSource, name, methodParam, abaplintVer);
         if (!extracted.success) {
-          return errorResult(extracted.error ?? `Method "${methodParam}" not found in ${name}.`);
+          const available = listing.success ? listing.methods.map((m) => m.name).join(', ') : '';
+          return errorResult(
+            extracted.error ??
+              `Method "${methodParam}" not found in ${name} section="${sectionParam ?? 'main'}".` +
+                (available ? ` Available: ${available}` : ''),
+          );
         }
         return textResult(extracted.methodSource);
       }
-      // Only cache the full merged source (no include param), not individual includes
-      if (!args.include) {
-        const { source, cacheHit } = await cachedGet('CLAS', name, () => client.getClass(name, versionOpts));
-        return cachedTextResult(source, cacheHit);
+
+      // include=<name> alone → raw section source
+      if (sectionParam) {
+        return textResult(await fetchSection());
       }
-      return textResult(await client.getClass(name, { include: args.include as string, ...versionOpts }));
+
+      // Default → JSON overview (metadata + method signatures + constants + section line counts)
+      return textResult(await buildClassOverview(client, name, abaplintVer, cachedGet));
     }
     case 'INTF': {
       const { source, cacheHit } = await cachedGet('INTF', name, () => client.getInterface(name, versionOpts));
+      if (args.grep) return textResult(grepSource(source, args.grep as string));
       return cachedTextResult(source, cacheHit);
     }
     case 'FUNC': {
@@ -1465,6 +1508,7 @@ async function handleSAPRead(
         group = resolved;
       }
       const { source, cacheHit } = await cachedGet('FUNC', name, () => client.getFunction(group, name, versionOpts));
+      if (args.grep) return textResult(grepSource(source, args.grep as string));
       return cachedTextResult(source, cacheHit);
     }
     case 'FUGR': {
@@ -1490,6 +1534,7 @@ async function handleSAPRead(
     }
     case 'INCL': {
       const { source, cacheHit } = await cachedGet('INCL', name, () => client.getInclude(name, versionOpts));
+      if (args.grep) return textResult(grepSource(source, args.grep as string));
       return cachedTextResult(source, cacheHit);
     }
     case 'DDLS': {
@@ -1503,18 +1548,22 @@ async function handleSAPRead(
       if ((args.include as string | undefined)?.toLowerCase() === 'elements') {
         return textResult(extractCdsElements(ddlSource, name));
       }
+      if (args.grep) return textResult(grepSource(ddlSource, args.grep as string));
       return cachedTextResult(ddlSource, cacheHit);
     }
     case 'DCLS': {
       const { source, cacheHit } = await cachedGet('DCLS', name, () => client.getDcl(name, versionOpts));
+      if (args.grep) return textResult(grepSource(source, args.grep as string));
       return cachedTextResult(source, cacheHit);
     }
     case 'BDEF': {
       const { source, cacheHit } = await cachedGet('BDEF', name, () => client.getBdef(name, versionOpts));
+      if (args.grep) return textResult(grepSource(source, args.grep as string));
       return cachedTextResult(source, cacheHit);
     }
     case 'SRVD': {
       const { source, cacheHit } = await cachedGet('SRVD', name, () => client.getSrvd(name, versionOpts));
+      if (args.grep) return textResult(grepSource(source, args.grep as string));
       return cachedTextResult(source, cacheHit);
     }
     case 'DDLX': {
@@ -2603,6 +2652,246 @@ export function normalizeObjectType(type: string): string {
   return SLASH_TYPE_MAP[normalized] ?? normalized;
 }
 
+// ─── Grep Helper ─────────────────────────────────────────────────────
+
+const GREP_MAX_MATCHES = 100;
+const GREP_CONTEXT_LINES = 3;
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function grepSource(source: string, pattern: string, methodRanges?: MethodInfo[]): string {
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern, 'gim');
+  } catch {
+    return `[Invalid regex pattern: "${pattern}"]`;
+  }
+
+  const lines = source.split('\n');
+  const matchingLineNums = new Set<number>();
+
+  for (let i = 0; i < lines.length; i++) {
+    if (regex.test(lines[i]!)) {
+      matchingLineNums.add(i);
+    }
+    regex.lastIndex = 0;
+  }
+
+  // If no matches and the pattern contains unescaped regex metacharacters,
+  // retry as a literal string — LLMs often forget to escape characters like ( ) .
+  if (matchingLineNums.size === 0 && /[.*+?^${}()|[\]\\]/.test(pattern)) {
+    const escaped = escapeRegex(pattern);
+    const literalRegex = new RegExp(escaped, 'gim');
+    for (let i = 0; i < lines.length; i++) {
+      if (literalRegex.test(lines[i]!)) {
+        matchingLineNums.add(i);
+      }
+      literalRegex.lastIndex = 0;
+    }
+    if (matchingLineNums.size > 0) {
+      pattern = escaped;
+    }
+  }
+
+  if (matchingLineNums.size === 0) {
+    return `No matches found for /${pattern}/i.`;
+  }
+
+  const truncated = matchingLineNums.size > GREP_MAX_MATCHES;
+  const matchSet = truncated ? new Set([...matchingLineNums].slice(0, GREP_MAX_MATCHES)) : matchingLineNums;
+
+  const visibleLines = new Set<number>();
+  for (const lineNum of matchSet) {
+    for (
+      let c = Math.max(0, lineNum - GREP_CONTEXT_LINES);
+      c <= Math.min(lines.length - 1, lineNum + GREP_CONTEXT_LINES);
+      c++
+    ) {
+      visibleLines.add(c);
+    }
+  }
+
+  const sorted = [...visibleLines].sort((a, b) => a - b);
+  const output: string[] = [];
+  output.push(`${matchingLineNums.size} match(es) for /${pattern}/i:`);
+
+  // Build 1-based line→method lookup from method ranges
+  const lineToMethod = (line1: number): { name: string; className: string } | undefined => {
+    if (!methodRanges) return undefined;
+    for (const m of methodRanges) {
+      if (m.startLine > 0 && line1 >= m.startLine && line1 <= m.endLine) return m;
+    }
+    return undefined;
+  };
+
+  let lastLine = -2;
+  let lastMethodLabel = '';
+  for (const lineNum of sorted) {
+    const m = lineToMethod(lineNum + 1);
+    const label = m ? `${m.className}=>${m.name}` : '';
+    if (label && label !== lastMethodLabel) {
+      if (lastLine !== -2) output.push(`--\n[${label}]`);
+      else output.push(`[${label}]`);
+      lastMethodLabel = label;
+    } else if (lineNum > lastLine + 1 && output.length > 1) {
+      output.push('--');
+    }
+    const marker = matchSet.has(lineNum) ? '>' : ' ';
+    output.push(`${marker}${String(lineNum + 1).padStart(5)}: ${lines[lineNum]}`);
+    lastLine = lineNum;
+  }
+
+  if (truncated) {
+    output.push(`\n... showing first ${GREP_MAX_MATCHES} of ${matchingLineNums.size} matches. Narrow your pattern.`);
+  }
+
+  return output.join('\n');
+}
+
+// ─── CLAS Overview Helpers ────────────────────────────────────────────
+
+interface ClassOverviewMethod {
+  name: string;
+  className: string;
+  visibility: string;
+  signature: string;
+  lines: string;
+  isInterfaceMethod?: boolean;
+  isRedefinition?: boolean;
+}
+
+interface ClassOverviewSection {
+  methods: ClassOverviewMethod[];
+  constants?: Array<{ name: string; type?: string; value?: string; line: number }>;
+}
+
+interface ClassOverview {
+  metadata: ClassMetadata;
+  sections: {
+    main: ClassOverviewSection;
+    testclasses: ClassOverviewSection | null;
+    definitions: { lines: number } | null;
+    implementations: { lines: number } | null;
+    macros: { lines: number } | null;
+  };
+  _hint: string;
+}
+
+function methodInfoToOverview(m: MethodInfo): ClassOverviewMethod {
+  const entry: ClassOverviewMethod = {
+    name: m.name,
+    className: m.className,
+    visibility: m.visibility,
+    signature: m.signature.replace(/\.\s*$/, ''),
+    lines: m.startLine > 0 ? `${m.startLine}-${m.endLine}` : '',
+  };
+  if (m.isInterfaceMethod) entry.isInterfaceMethod = true;
+  if (m.isRedefinition) entry.isRedefinition = true;
+  return entry;
+}
+
+function extractClassConstants(source: string): Array<{ name: string; type?: string; value?: string; line: number }> {
+  const lines = source.split('\n');
+  const constants: Array<{ name: string; type?: string; value?: string; line: number }> = [];
+  let inDefinition = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i]!.trim();
+    const upper = trimmed.toUpperCase();
+
+    if (upper.match(/^CLASS\s+\S+\s+DEFINITION/)) {
+      inDefinition = true;
+      continue;
+    }
+    if (upper === 'ENDCLASS.' && inDefinition) {
+      inDefinition = false;
+      continue;
+    }
+    if (upper.match(/^CLASS\s+\S+\s+IMPLEMENTATION/)) break;
+
+    if (inDefinition) {
+      const constMatch = trimmed.match(/^CONSTANTS\s+(\S+)\s+TYPE\s+(\S+)\s+VALUE\s+(.+?)\s*\./i);
+      if (constMatch) {
+        constants.push({
+          name: constMatch[1]!,
+          type: constMatch[2]!,
+          value: constMatch[3]!,
+          line: i + 1,
+        });
+      }
+    }
+  }
+  return constants;
+}
+
+function lineCount(source: string | null): { lines: number } | null {
+  if (!source) return null;
+  const count = source.split('\n').filter((l) => {
+    const t = l.trim();
+    return t !== '' && !t.startsWith('*') && !t.startsWith('"');
+  }).length;
+  return count > 0 ? { lines: count } : null;
+}
+
+async function buildClassOverview(
+  client: import('../adt/client.js').AdtClient,
+  name: string,
+  abaplintVer: import('@abaplint/core').Version | undefined,
+  cachedGet: (
+    type: string,
+    name: string,
+    fetcher: () => Promise<string>,
+  ) => Promise<{ source: string; cacheHit: boolean }>,
+): Promise<string> {
+  const fetchInclude = async (include: string): Promise<string | null> => {
+    try {
+      return await client.getClassInclude(name, include);
+    } catch (err) {
+      if (isNotFoundError(err)) return null;
+      throw err;
+    }
+  };
+
+  const [metadata, mainResult, testclassesSrc, definitionsSrc, implementationsSrc, macrosSrc] = await Promise.all([
+    client.getClassMetadata(name),
+    cachedGet('CLAS', name, () => client.getClass(name)),
+    fetchInclude('testclasses'),
+    fetchInclude('definitions'),
+    fetchInclude('implementations'),
+    fetchInclude('macros'),
+  ]);
+
+  const mainSource = mainResult.source;
+  const mainListing = listMethods(mainSource, name, abaplintVer);
+  const mainMethods = mainListing.success ? mainListing.methods.map(methodInfoToOverview) : [];
+  const mainConstants = extractClassConstants(mainSource);
+
+  let testclassesSection: ClassOverviewSection | null = null;
+  if (testclassesSrc) {
+    const testListing = listMethods(testclassesSrc, name, abaplintVer);
+    testclassesSection = {
+      methods: testListing.success ? testListing.methods.map(methodInfoToOverview) : [],
+    };
+  }
+
+  const overview: ClassOverview = {
+    metadata,
+    sections: {
+      main: { methods: mainMethods, constants: mainConstants.length > 0 ? mainConstants : undefined },
+      testclasses: testclassesSection,
+      definitions: lineCount(definitionsSrc),
+      implementations: lineCount(implementationsSrc),
+      macros: lineCount(macrosSrc),
+    },
+    _hint:
+      'Use method="<name>" to read a method, method="<name>" include="testclasses" for test methods, grep="<pattern>" to search, format="full" for complete source',
+  };
+
+  return JSON.stringify(overview, null, 2);
+}
+
 /** Normalize type fields before schema validation so slash/case aliases are accepted. */
 function normalizeTypeArgsForValidation(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
   switch (toolName) {
@@ -3396,6 +3685,41 @@ async function handleSAPWrite(
         2,
       );
       return warnings ? textResult(`${msg}\n\n${warnings}\n\n${details}`) : textResult(`${msg}\n\n${details}`);
+    }
+    case 'edit_definition': {
+      if (!source)
+        return errorResult(
+          '"source" (new CLASS ... DEFINITION ... ENDCLASS block) is required for edit_definition action.',
+        );
+      if (type !== 'CLAS') return errorResult('edit_definition is only supported for type=CLAS.');
+      await enforcePackageForExistingObject();
+
+      const currentSource = cachingLayer
+        ? (await cachingLayer.getSource('CLAS', name, () => client.getClass(name))).source
+        : await client.getClass(name);
+
+      const spliced = spliceDefinition(currentSource, name, source);
+      if (!spliced.success) {
+        return errorResult(spliced.error ?? `Failed to splice definition for ${name}.`);
+      }
+
+      const lintWarnings = runPreWriteLint(spliced.newSource, type, name, config, lintOverride);
+      if (lintWarnings.blocked) return lintWarnings.result!;
+
+      const checkNotes = await runPreWriteSyntaxCheck(
+        client,
+        type,
+        spliced.newSource,
+        objectUrl,
+        config,
+        checkOverride,
+      );
+
+      await safeUpdateSource(client.http, client.safety, objectUrl, srcUrl, spliced.newSource, transport);
+      cachingLayer?.invalidate(type, name);
+      const msg = `Successfully updated definition for ${type} ${name}.`;
+      const extras = [lintWarnings.warnings, checkNotes].filter(Boolean).join('\n\n');
+      return extras ? textResult(`${msg}\n\n${extras}`) : textResult(msg);
     }
     case 'delete': {
       await enforcePackageForExistingObject();

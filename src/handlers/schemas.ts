@@ -164,8 +164,9 @@ export const SAPReadSchema = z
     include: z.string().optional(),
     group: z.string().optional(),
     method: z.string().optional(),
+    grep: z.string().optional(),
     expand_includes: z.coerce.boolean().optional(),
-    format: z.enum(['text', 'structured']).optional(),
+    format: z.enum(['text', 'structured', 'full']).optional(),
     maxRows: z.coerce.number().optional(),
     sqlFilter: z.string().optional(),
     objectType: z.string().optional(),
@@ -181,7 +182,8 @@ export const SAPReadSchemaBtp = z
     include: z.string().optional(),
     group: z.string().optional(),
     method: z.string().optional(),
-    format: z.enum(['text', 'structured']).optional(),
+    grep: z.string().optional(),
+    format: z.enum(['text', 'structured', 'full']).optional(),
     maxRows: z.coerce.number().optional(),
     sqlFilter: z.string().optional(),
     objectType: z.string().optional(),
@@ -329,7 +331,15 @@ const batchObjectSchemaBtp = z.object({
 });
 
 export const SAPWriteSchema = z.object({
-  action: z.enum(['create', 'update', 'delete', 'edit_method', 'batch_create', 'scaffold_rap_handlers']),
+  action: z.enum([
+    'create',
+    'update',
+    'delete',
+    'edit_method',
+    'edit_definition',
+    'batch_create',
+    'scaffold_rap_handlers',
+  ]),
   type: z.enum(SAPWRITE_TYPES_ONPREM).optional(),
   name: z.string().optional(),
   source: z.string().optional(),
@@ -377,7 +387,15 @@ export const SAPWriteSchema = z.object({
 });
 
 export const SAPWriteSchemaBtp = z.object({
-  action: z.enum(['create', 'update', 'delete', 'edit_method', 'batch_create', 'scaffold_rap_handlers']),
+  action: z.enum([
+    'create',
+    'update',
+    'delete',
+    'edit_method',
+    'edit_definition',
+    'batch_create',
+    'scaffold_rap_handlers',
+  ]),
   type: z.enum(SAPWRITE_TYPES_BTP).optional(),
   name: z.string().optional(),
   source: z.string().optional(),

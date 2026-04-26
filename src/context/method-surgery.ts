@@ -20,6 +20,8 @@ const DEFAULT_VERSION = Version.Cloud;
 export interface MethodInfo {
   /** Method name, e.g. "get_name" or "zif_order~process" */
   name: string;
+  /** Owning class name (e.g. "ZCL_FOO" or "ltcl_test_a" for local test classes) */
+  className: string;
   /** Visibility section where the method is defined */
   visibility: 'public' | 'protected' | 'private';
   /** Full METHODS statement text from the definition (e.g. "METHODS get_name RETURNING VALUE(rv) TYPE string.") */
@@ -115,8 +117,8 @@ function listMethodsAST(source: string, className: string, ver: Version): Method
     { signature: string; visibility: 'public' | 'protected' | 'private'; isRedefinition: boolean }
   >();
 
-  // Collect method line ranges from IMPLEMENTATION
-  const implementations = new Map<string, { startLine: number; endLine: number }>();
+  // Collect method line ranges from IMPLEMENTATION (keyed by upper method name)
+  const implementations = new Map<string, { startLine: number; endLine: number; implClassName: string }>();
 
   for (const obj of reg.getObjects()) {
     const file = (obj as { getMainABAPFile?: () => unknown }).getMainABAPFile?.() as
@@ -138,18 +140,23 @@ function listMethodsAST(source: string, className: string, ver: Version): Method
     // ── Implementation: extract METHOD ... ENDMETHOD line ranges ──
     const classImpls = structure.findAllStructuresRecursive(Structures.ClassImplementation);
     for (const classImpl of classImpls) {
+      // Extract owning class name from "CLASS class_name IMPLEMENTATION."
+      const implFirstStmt = classImpl.getFirstStatement();
+      const implTokens = implFirstStmt?.concatTokens() ?? '';
+      const classNameMatch = implTokens.match(/^CLASS\s+(\S+)\s+IMPLEMENTATION/i);
+      const implClassName = classNameMatch?.[1]?.replace(/\.$/, '') ?? className;
+
       const methods = classImpl.findAllStructuresRecursive(Structures.Method) as AstNode[];
       for (const method of methods) {
         const firstStmt = method.getFirstStatement();
         if (!firstStmt) continue;
         const tokens = firstStmt.concatTokens();
-        // Extract method name from "METHOD method_name."
         const match = tokens.match(/^METHOD\s+(\S+)/i);
         if (match) {
           const name = match[1]!.replace(/\.$/, '');
           const startLine = firstStmt.getFirstToken().getRow();
           const endLine = method.getLastToken().getRow();
-          implementations.set(name.toUpperCase(), { startLine, endLine });
+          implementations.set(name.toUpperCase(), { startLine, endLine, implClassName });
         }
       }
     }
@@ -187,6 +194,7 @@ function listMethodsAST(source: string, className: string, ver: Version): Method
 
     methods.push({
       name: originalName,
+      className: impl.implClassName,
       visibility,
       signature,
       startLine: impl.startLine,
@@ -220,6 +228,7 @@ function listMethodsAST(source: string, className: string, ver: Version): Method
     const originalName = sig.signature.match(/(?:CLASS-)?METHODS\s+(\S+)/i)?.[1] ?? upperName;
     methods.push({
       name: originalName,
+      className,
       visibility: sig.visibility,
       signature: sig.signature,
       startLine: 0,
@@ -331,6 +340,7 @@ function listMethodsRegex(source: string, className: string): MethodListResult {
 
   // Phase 2: Scan IMPLEMENTATION for METHOD ... ENDMETHOD line ranges
   let inImplementation = false;
+  let currentImplClassName = className;
   let currentMethodName = '';
   let methodStartLine = 0;
 
@@ -338,8 +348,10 @@ function listMethodsRegex(source: string, className: string): MethodListResult {
     const trimmed = lines[i]!.trim();
     const upper = trimmed.toUpperCase();
 
-    if (upper.match(/^CLASS\s+\S+\s+IMPLEMENTATION\s*\./)) {
+    const classImplMatch = trimmed.match(/^CLASS\s+(\S+)\s+IMPLEMENTATION\s*\./i);
+    if (classImplMatch) {
       inImplementation = true;
+      currentImplClassName = classImplMatch[1]!;
       continue;
     }
     if (upper === 'ENDCLASS.' && inImplementation) {
@@ -359,6 +371,7 @@ function listMethodsRegex(source: string, className: string): MethodListResult {
 
         methods.push({
           name: currentMethodName,
+          className: currentImplClassName,
           visibility: sig?.visibility ?? 'public',
           signature: sig?.signature ?? `METHODS ${currentMethodName}.`,
           startLine: methodStartLine,
@@ -477,6 +490,84 @@ export function extractMethod(
   };
 }
 
+// ─── Definition Surgery ─────────────────────────────────────────────
+
+export interface DefinitionExtractResult {
+  definitionSource: string;
+  startLine: number;
+  endLine: number;
+  success: boolean;
+  error?: string;
+}
+
+export function extractDefinition(source: string, className: string): DefinitionExtractResult {
+  const normalized = source.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  const upperClassName = className.toUpperCase();
+  let startLine = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i]!.trim().toUpperCase();
+    if (startLine === -1) {
+      const match = trimmed.match(/^CLASS\s+(\S+)\s+DEFINITION/);
+      if (match && match[1]!.replace(/\.$/, '').toUpperCase() === upperClassName) {
+        startLine = i;
+      }
+    } else if (trimmed === 'ENDCLASS.') {
+      return {
+        definitionSource: lines.slice(startLine, i + 1).join('\n'),
+        startLine: startLine + 1,
+        endLine: i + 1,
+        success: true,
+      };
+    }
+  }
+
+  if (startLine === -1) {
+    return {
+      definitionSource: '',
+      startLine: 0,
+      endLine: 0,
+      success: false,
+      error: `CLASS ${className} DEFINITION not found.`,
+    };
+  }
+  return {
+    definitionSource: '',
+    startLine: 0,
+    endLine: 0,
+    success: false,
+    error: `ENDCLASS not found for ${className} DEFINITION.`,
+  };
+}
+
+export function spliceDefinition(source: string, className: string, newDefinition: string): MethodSpliceResult {
+  const hasCRLF = source.includes('\r\n');
+  const normalized = source.replace(/\r\n/g, '\n');
+  const extracted = extractDefinition(normalized, className);
+
+  if (!extracted.success) {
+    return { newSource: '', oldMethodSource: '', newMethodSource: '', success: false, error: extracted.error };
+  }
+
+  const lines = normalized.split('\n');
+  const before = lines.slice(0, extracted.startLine - 1);
+  const after = lines.slice(extracted.endLine);
+  const newDef = newDefinition.replace(/\r\n/g, '\n');
+
+  let newSource = [...before, newDef, ...after].join('\n');
+  if (hasCRLF) {
+    newSource = newSource.replace(/\n/g, '\r\n');
+  }
+
+  return {
+    newSource,
+    oldMethodSource: extracted.definitionSource,
+    newMethodSource: newDef,
+    success: true,
+  };
+}
+
 // ─── Splice Method ──────────────────────────────────────────────────
 
 /**
@@ -559,26 +650,51 @@ export function formatMethodListing(listing: MethodListResult): string {
     return `=== ${listing.className} (0 methods) ===\nNo methods found.`;
   }
 
+  // Check if multiple classes are present (e.g., testclasses with several local test classes)
+  const distinctClasses = new Set(listing.methods.map((m) => m.className));
+  const multiClass = distinctClasses.size > 1;
+
   const lines: string[] = [];
   lines.push(`=== ${listing.className} (${listing.methods.length} methods) ===`);
 
-  let currentVisibility = '';
-  for (const method of listing.methods) {
-    if (method.visibility !== currentVisibility) {
-      currentVisibility = method.visibility;
-      lines.push(`${currentVisibility.toUpperCase()}:`);
+  if (multiClass) {
+    const byClass = new Map<string, MethodInfo[]>();
+    for (const method of listing.methods) {
+      const list = byClass.get(method.className) ?? [];
+      list.push(method);
+      byClass.set(method.className, list);
     }
-
-    const flags: string[] = [];
-    if (method.isInterfaceMethod) flags.push('interface');
-    if (method.isRedefinition) flags.push('redefinition');
-    const flagStr = flags.length > 0 ? `  [${flags.join(', ')}]` : '';
-    const lineRange = method.startLine > 0 ? `  [lines ${method.startLine}-${method.endLine}]` : '';
-
-    // Show the signature (strip trailing period for cleaner display)
-    const sig = method.signature.replace(/\.\s*$/, '');
-    lines.push(`  ${sig}${flagStr}${lineRange}`);
+    for (const [cls, clsMethods] of byClass) {
+      lines.push(`\n--- ${cls} ---`);
+      let currentVisibility = '';
+      for (const method of clsMethods) {
+        if (method.visibility !== currentVisibility) {
+          currentVisibility = method.visibility;
+          lines.push(`${currentVisibility.toUpperCase()}:`);
+        }
+        lines.push(formatMethodLine(method));
+      }
+    }
+  } else {
+    let currentVisibility = '';
+    for (const method of listing.methods) {
+      if (method.visibility !== currentVisibility) {
+        currentVisibility = method.visibility;
+        lines.push(`${currentVisibility.toUpperCase()}:`);
+      }
+      lines.push(formatMethodLine(method));
+    }
   }
 
   return lines.join('\n');
+}
+
+function formatMethodLine(method: MethodInfo): string {
+  const flags: string[] = [];
+  if (method.isInterfaceMethod) flags.push('interface');
+  if (method.isRedefinition) flags.push('redefinition');
+  const flagStr = flags.length > 0 ? `  [${flags.join(', ')}]` : '';
+  const lineRange = method.startLine > 0 ? `  [lines ${method.startLine}-${method.endLine}]` : '';
+  const sig = method.signature.replace(/\.\s*$/, '');
+  return `  ${sig}${flagStr}${lineRange}`;
 }

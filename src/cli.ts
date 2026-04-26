@@ -114,12 +114,36 @@ program
   .command('read <type> <name>')
   .description('Read an ABAP object via SAPRead (PROG, CLAS, INTF, DDLS, TABL, DOMA, DTEL, ...)')
   .option('--flat', 'Return flat source for CLAS/INTF (instead of structured sections)')
+  .option('--grep <pattern>', 'Regex pattern to search within source')
+  .option('--method <name>', 'Read a single method (CLAS only)')
+  .option('--include <include>', 'Class section: main, testclasses, definitions, implementations, macros')
+  .option('--format <fmt>', 'Output format: full (complete source JSON)')
+  .option('--version <ver>', 'Source version: active or inactive')
   .addOption(outputOption)
-  .action(async (type: string, name: string, opts: { flat?: boolean; output: OutputMode }) => {
-    const args: Record<string, unknown> = { type: type.toUpperCase(), name };
-    if (opts.flat) args.flat = true;
-    process.exit(await runToolCall('SAPRead', args, opts.output));
-  });
+  .action(
+    async (
+      type: string,
+      name: string,
+      opts: {
+        flat?: boolean;
+        grep?: string;
+        method?: string;
+        include?: string;
+        format?: string;
+        version?: string;
+        output: OutputMode;
+      },
+    ) => {
+      const args: Record<string, unknown> = { type: type.toUpperCase(), name };
+      if (opts.flat) args.flat = true;
+      if (opts.grep) args.grep = opts.grep;
+      if (opts.method) args.method = opts.method;
+      if (opts.include) args.include = opts.include;
+      if (opts.format) args.format = opts.format;
+      if (opts.version) args.version = opts.version;
+      process.exit(await runToolCall('SAPRead', args, opts.output));
+    },
+  );
 
 // `source` kept as an alias of `read` with flat=true to preserve legacy CLI behavior.
 program

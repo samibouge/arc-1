@@ -930,7 +930,7 @@ describe('Intent Handler', () => {
       expect(parsed.objects[0].type).toBe('CLAS/OC');
     });
 
-    it('reads class with format="structured" returns JSON with metadata and source fields', async () => {
+    it('reads class with format="full" returns JSON with metadata and source fields', async () => {
       const classMetadataXml = `<?xml version="1.0" encoding="utf-8"?>
 <class:abapClass class:final="true" class:visibility="public" class:category="00" class:fixPointArithmetic="true"
     adtcore:name="ZCL_TEST" adtcore:type="CLAS/OC" adtcore:description="Test class" adtcore:language="EN"
@@ -958,7 +958,7 @@ describe('Intent Handler', () => {
       const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPRead', {
         type: 'CLAS',
         name: 'ZCL_TEST',
-        format: 'structured',
+        format: 'full',
       });
 
       expect(result.isError).toBeUndefined();
@@ -973,39 +973,7 @@ describe('Intent Handler', () => {
       expect(parsed.macros).toBeNull();
     });
 
-    it('reads class with format="text" returns plain source (default behavior)', async () => {
-      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPRead', {
-        type: 'CLAS',
-        name: 'ZCL_TEST',
-        format: 'text',
-      });
-      expect(result.isError).toBeUndefined();
-      // Plain text, not JSON
-      expect(() => JSON.parse(result.content[0]?.text ?? '')).toThrow();
-    });
-
-    it('reads class without format returns plain source (backwards compatible)', async () => {
-      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPRead', {
-        type: 'CLAS',
-        name: 'ZCL_TEST',
-      });
-      expect(result.isError).toBeUndefined();
-      // Plain text, not JSON — backwards compatible
-      expect(result.content[0]?.text).toContain('REPORT');
-    });
-
-    it('returns error when format="structured" used with non-CLAS type', async () => {
-      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPRead', {
-        type: 'PROG',
-        name: 'ZTEST',
-        format: 'structured',
-      });
-      expect(result.isError).toBe(true);
-      expect(result.content[0]?.text).toContain('structured');
-      expect(result.content[0]?.text).toContain('CLAS');
-    });
-
-    it('reads class with format="structured" and method param — format takes precedence', async () => {
+    it('default CLAS read returns JSON overview with metadata and sections', async () => {
       const classMetadataXml = `<?xml version="1.0" encoding="utf-8"?>
 <class:abapClass class:category="00" class:fixPointArithmetic="true"
     adtcore:name="ZCL_TEST" adtcore:description="Test class" adtcore:language="EN"
@@ -1033,7 +1001,55 @@ describe('Intent Handler', () => {
       const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPRead', {
         type: 'CLAS',
         name: 'ZCL_TEST',
+      });
+      expect(result.isError).toBeUndefined();
+      const parsed = JSON.parse(result.content[0]?.text ?? '');
+      expect(parsed.metadata).toBeDefined();
+      expect(parsed.sections).toBeDefined();
+      expect(parsed.sections.main).toBeDefined();
+      expect(parsed._hint).toContain('method=');
+    });
+
+    it('returns error when format="structured" used with non-CLAS type', async () => {
+      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPRead', {
+        type: 'PROG',
+        name: 'ZTEST',
         format: 'structured',
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain('structured');
+      expect(result.content[0]?.text).toContain('CLAS');
+    });
+
+    it('reads class with format="full" and method param — format takes precedence', async () => {
+      const classMetadataXml = `<?xml version="1.0" encoding="utf-8"?>
+<class:abapClass class:category="00" class:fixPointArithmetic="true"
+    adtcore:name="ZCL_TEST" adtcore:description="Test class" adtcore:language="EN"
+    adtcore:masterLanguage="EN"
+    xmlns:class="http://www.sap.com/adt/oo/classes" xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:packageRef adtcore:name="$TMP"/>
+</class:abapClass>`;
+      mockFetch.mockReset();
+      mockFetch.mockImplementation(async (url: string) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/oo/classes/ZCL_TEST') && !urlStr.includes('/source/') && !urlStr.includes('/includes/')) {
+          return mockResponse(200, classMetadataXml, { 'x-csrf-token': 'T' });
+        }
+        if (urlStr.includes('/source/main')) {
+          return mockResponse(200, 'CLASS zcl_test DEFINITION.\nENDCLASS.\nCLASS zcl_test IMPLEMENTATION.\nENDCLASS.', {
+            'x-csrf-token': 'T',
+          });
+        }
+        if (urlStr.includes('/includes/')) {
+          return mockResponse(404, 'Not Found', { 'x-csrf-token': 'T' });
+        }
+        return mockResponse(200, '', { 'x-csrf-token': 'T' });
+      });
+
+      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPRead', {
+        type: 'CLAS',
+        name: 'ZCL_TEST',
+        format: 'full',
         method: 'get_name',
       });
 
@@ -1043,7 +1059,7 @@ describe('Intent Handler', () => {
       expect(parsed.main).toBeDefined();
     });
 
-    it('structured response is valid JSON with expected keys', async () => {
+    it('overview response is valid JSON with expected keys', async () => {
       const classMetadataXml = `<?xml version="1.0" encoding="utf-8"?>
 <class:abapClass class:category="00" class:fixPointArithmetic="true"
     adtcore:name="ZCL_TEST" adtcore:description="Structured test" adtcore:language="EN"
@@ -1058,10 +1074,9 @@ describe('Intent Handler', () => {
           return mockResponse(200, classMetadataXml, { 'x-csrf-token': 'T' });
         }
         if (urlStr.includes('/source/main')) {
-          return mockResponse(200, 'CLASS zcl_test DEFINITION.\nENDCLASS.', { 'x-csrf-token': 'T' });
-        }
-        if (urlStr.includes('/includes/testclasses')) {
-          return mockResponse(200, 'CLASS ltcl_test DEFINITION.\nENDCLASS.', { 'x-csrf-token': 'T' });
+          return mockResponse(200, 'CLASS zcl_test DEFINITION.\nENDCLASS.\nCLASS zcl_test IMPLEMENTATION.\nENDCLASS.', {
+            'x-csrf-token': 'T',
+          });
         }
         if (urlStr.includes('/includes/')) {
           return mockResponse(404, 'Not Found', { 'x-csrf-token': 'T' });
@@ -1072,16 +1087,13 @@ describe('Intent Handler', () => {
       const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPRead', {
         type: 'CLAS',
         name: 'ZCL_TEST',
-        format: 'structured',
       });
 
       expect(result.isError).toBeUndefined();
       const parsed = JSON.parse(result.content[0]?.text ?? '');
-      expect(Object.keys(parsed)).toEqual(
-        expect.arrayContaining(['metadata', 'main', 'testclasses', 'definitions', 'implementations', 'macros']),
-      );
+      expect(Object.keys(parsed)).toEqual(expect.arrayContaining(['metadata', 'sections', '_hint']));
       expect(parsed.metadata.package).toBe('ZDEV');
-      expect(parsed.testclasses).toContain('ltcl_test');
+      expect(parsed.sections.main).toBeDefined();
     });
 
     it('returns sqlFilter remediation hint for TABLE_CONTENTS parser errors', async () => {
@@ -5583,8 +5595,7 @@ ENDCLASS.`;
   // ─── Method-Level Surgery ──────────────────────────────────────────
 
   describe('method-level SAPRead', () => {
-    it('lists methods with method="*"', async () => {
-      // Mock response: a class with methods
+    it('lists methods via default overview (method="*" goes to overview)', async () => {
       const classSource = `CLASS zcl_test DEFINITION PUBLIC.
   PUBLIC SECTION.
     METHODS get_name RETURNING VALUE(rv) TYPE string.
@@ -5598,20 +5609,38 @@ CLASS zcl_test IMPLEMENTATION.
     " run logic
   ENDMETHOD.
 ENDCLASS.`;
+      const classMetadataXml = `<?xml version="1.0" encoding="utf-8"?>
+<class:abapClass class:category="00" adtcore:name="ZCL_TEST" adtcore:description="Test" adtcore:language="EN"
+    adtcore:masterLanguage="EN"
+    xmlns:class="http://www.sap.com/adt/oo/classes" xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:packageRef adtcore:name="$TMP"/>
+</class:abapClass>`;
 
       mockFetch.mockReset();
-      mockFetch.mockResolvedValueOnce(mockResponse(200, classSource));
+      mockFetch.mockImplementation(async (url: string) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/oo/classes/ZCL_TEST') && !urlStr.includes('/source/') && !urlStr.includes('/includes/')) {
+          return mockResponse(200, classMetadataXml, { 'x-csrf-token': 'T' });
+        }
+        if (urlStr.includes('/source/main')) {
+          return mockResponse(200, classSource, { 'x-csrf-token': 'T' });
+        }
+        if (urlStr.includes('/includes/')) {
+          return mockResponse(404, 'Not Found', { 'x-csrf-token': 'T' });
+        }
+        return mockResponse(200, '', { 'x-csrf-token': 'T' });
+      });
 
       const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPRead', {
         type: 'CLAS',
         name: 'ZCL_TEST',
-        method: '*',
       });
       expect(result.isError).toBeUndefined();
-      expect(result.content[0]?.text).toContain('ZCL_TEST');
-      expect(result.content[0]?.text).toContain('get_name');
-      expect(result.content[0]?.text).toContain('run');
-      expect(result.content[0]?.text).toContain('methods');
+      const parsed = JSON.parse(result.content[0]?.text ?? '');
+      expect(parsed.sections.main.methods).toBeDefined();
+      const methodNames = parsed.sections.main.methods.map((m: { name: string }) => m.name);
+      expect(methodNames).toContain('get_name');
+      expect(methodNames).toContain('run');
     });
 
     it('extracts single method with method="get_name"', async () => {
