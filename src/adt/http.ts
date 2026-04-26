@@ -813,6 +813,12 @@ export class AdtHttpClient {
       headers['SAP-Connectivity-Authentication'] = this.config.sapConnectivityAuth;
     }
 
+    // Lazy cookie reload (same guard as request()) — re-read cookie file
+    // before CSRF fetch so a hot-reloaded cookie is used immediately.
+    if (this.cookiesCleared && this.isCookieAuthMode()) {
+      this.reloadCookiesFromSource();
+    }
+
     // Include existing cookies (config + jar) so session is maintained
     const cookieParts: string[] = [];
     if (this.config.cookies) {
@@ -869,6 +875,10 @@ export class AdtHttpClient {
       const token = response.headers.get('x-csrf-token');
       if (!token || token === 'Required') {
         if (response.status === 401) {
+          if (this.isCookieAuthMode()) {
+            this.config.cookies = {};
+            this.cookiesCleared = true;
+          }
           throw new AdtApiError(
             `Authentication failed (401) using sap-client=${this.config.client ?? '100'}. Check SAP_CLIENT, SAP_USER, and SAP_PASSWORD.`,
             401,
