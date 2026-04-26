@@ -878,8 +878,9 @@ async function inactiveSyntaxDiagnostic(client: AdtClient, type: string, name: s
     if (errors.length === 0) return '';
 
     const lines = errors.map((msg) => {
-      const line = msg.line ? `Line ${msg.line}` : 'Line ?';
-      return `  - ${line}: ${msg.text}`;
+      const prefix = msg.line ? `[line ${msg.line}] ` : '';
+      const suffix = msg.uri ? ` (${msg.uri})` : '';
+      return `- ${prefix}${msg.text}${suffix}`;
     });
 
     return `\nServer syntax check (inactive):\n${lines.join('\n')}`;
@@ -3765,10 +3766,14 @@ async function handleSAPActivate(client: AdtClient, args: Record<string, unknown
     if (result.success) {
       return textResult(`Successfully activated ${objects.length} objects: ${names}.${statusDetails}`);
     }
-    // On batch failure enrich with per-object inactive-version syntax errors.
-    const diagnostics = await Promise.all(objects.map((o) => inactiveSyntaxDiagnostic(client, o.type, o.name)));
+    // On batch failure enrich with per-object inactive-version syntax errors —
+    // only for objects whose activation returned no error details, to avoid duplicating messages.
+    const objectsNeedingSyntaxCheck = objects.filter((_o, i) => batchStatuses[i].status !== 'error');
+    const diagnostics = await Promise.all(
+      objectsNeedingSyntaxCheck.map((o) => inactiveSyntaxDiagnostic(client, o.type, o.name)),
+    );
     const combinedDiag = diagnostics
-      .map((d, i) => (d ? `\n[${objects[i].name}]${d}` : ''))
+      .map((d, i) => (d ? `\n[${objectsNeedingSyntaxCheck[i].name}]${d}` : ''))
       .filter(Boolean)
       .join('');
     return errorResult(
@@ -3786,7 +3791,9 @@ async function handleSAPActivate(client: AdtClient, args: Record<string, unknown
   }
   // On failure, try to enrich with the actual compiler errors from the inactive version —
   // especially useful when SAP returned <ioc:inactiveObjects> with no <msg> detail.
-  const syntaxDetail = await inactiveSyntaxDiagnostic(client, type, name);
+  // Skip when activation already returned error details to avoid duplicating the same messages.
+  const hasActivationErrors = result.details.some((d) => d.severity === 'error');
+  const syntaxDetail = hasActivationErrors ? '' : await inactiveSyntaxDiagnostic(client, type, name);
   let activationError = `Activation failed for ${type} ${name}.\n${formatActivationMessages(result)}${syntaxDetail}`;
   if (type === 'DDLS') {
     activationError += `\n\n${await buildCdsActivationDependencyHint(client, name, objectUrl)}`;
@@ -3843,32 +3850,38 @@ interface BatchActivationObjectStatus {
 
 function normalizeActivationUri(uri: string | undefined): string | undefined {
   if (!uri) return undefined;
-  return uri.replace(/#.*$/, '').replace(/\/+$/, '');
+  return uri.replace(/#.*$/, '').replace(/\/+$/, '').toLowerCase();
 }
 
 function buildBatchActivationStatuses(
   objects: BatchActivationObject[],
   result: ActivationResult,
 ): BatchActivationObjectStatus[] {
-  const byUri = new Map<string, Array<{ severity: 'error' | 'warning' | 'info'; text: string }>>();
+  // Group error details by object. SAP error URIs may be subpaths of the object URL
+  // (e.g. .../classes/zcl_demo/source/main for object .../classes/ZCL_DEMO) and may
+  // differ in case, so we lowercase and use startsWith for matching.
+  const objectKeys = objects.map((obj) => normalizeActivationUri(obj.url) ?? '');
+  const perObject: Array<Array<{ severity: 'error' | 'warning' | 'info'; text: string }>> = objects.map(() => []);
   const unassigned: string[] = [];
 
   for (const detail of result.details) {
-    const key = normalizeActivationUri(detail.uri);
-    if (!key) {
-      const prefix = detail.line ? `[line ${detail.line}] ` : '';
-      unassigned.push(`${prefix}${detail.text}`);
+    const detailUri = normalizeActivationUri(detail.uri);
+    const prefix = detail.line ? `[line ${detail.line}] ` : '';
+    const suffix = detail.uri ? ` (${detail.uri})` : '';
+    if (!detailUri) {
+      unassigned.push(`${prefix}${detail.text}${suffix}`);
       continue;
     }
-    const list = byUri.get(key) ?? [];
-    const prefix = detail.line ? `[line ${detail.line}] ` : '';
-    list.push({ severity: detail.severity, text: `${prefix}${detail.text}` });
-    byUri.set(key, list);
+    const matchIdx = objectKeys.findIndex((k) => k && detailUri.startsWith(k));
+    if (matchIdx >= 0) {
+      perObject[matchIdx].push({ severity: detail.severity, text: `${prefix}${detail.text}${suffix}` });
+    } else {
+      unassigned.push(`${prefix}${detail.text}${suffix}`);
+    }
   }
 
   return objects.map((obj, index) => {
-    const key = normalizeActivationUri(obj.url) ?? '';
-    const details = byUri.get(key) ?? [];
+    const details = perObject[index];
     const hasError = details.some((detail) => detail.severity === 'error');
     const hasWarning = details.some((detail) => detail.severity === 'warning');
     const status: BatchActivationObjectStatus['status'] = hasError ? 'error' : hasWarning ? 'warning' : 'active';
@@ -3887,11 +3900,17 @@ function buildBatchActivationStatuses(
 
 function formatBatchActivationStatuses(statuses: BatchActivationObjectStatus[]): string {
   if (statuses.length === 0) return '';
-  const lines = statuses.map((status) => {
-    const messages = status.messages.length > 0 ? ` — ${status.messages.join('; ')}` : '';
-    return `- ${status.name} (${status.type}): ${status.status}${messages}`;
-  });
-  return `\nPer-object status:\n${lines.join('\n')}`;
+  const lines: string[] = [];
+  for (const status of statuses) {
+    if (status.messages.length === 0) {
+      lines.push(`- ${status.name} (${status.type}): ${status.status}`);
+    } else {
+      for (const msg of status.messages) {
+        lines.push(`- ${status.name} (${status.type}) ${msg}`);
+      }
+    }
+  }
+  return `\n${lines.join('\n')}`;
 }
 
 // ─── SAPNavigate Handler ─────────────────────────────────────────────

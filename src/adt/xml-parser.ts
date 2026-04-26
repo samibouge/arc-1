@@ -904,7 +904,7 @@ export function parseBspFolderListing(xml: string, appName: string): BspFileNode
  * fast-xml-parser with processEntities:false + parseAttributeValue:false
  * keeps raw encoded strings — we decode them for human-readable output.
  */
-function decodeXmlEntities(s: string): string {
+export function decodeXmlEntities(s: string): string {
   return s
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')

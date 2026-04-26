@@ -13,7 +13,7 @@ import { AdtApiError } from './errors.js';
 import type { AdtHttpClient } from './http.js';
 import { checkOperation, OperationType, type SafetyConfig } from './safety.js';
 import type { FixDelta, FixProposal, SyntaxCheckResult, SyntaxMessage, UnitTestResult } from './types.js';
-import { escapeXmlAttr, findDeepNodes, parseXml } from './xml-parser.js';
+import { decodeXmlEntities, escapeXmlAttr, findDeepNodes, parseXml } from './xml-parser.js';
 
 /** Run syntax check on an ABAP object.
  *
@@ -594,14 +594,21 @@ export function parseActivationOutcome(xml: string): ActivationOutcome {
         ? 'warning'
         : 'info';
 
-    const rawUri = m['@_uri'];
+    const rawUri = m['@_uri'] ?? m['@_href'];
     const rawLine = m['@_line'];
     const detail: ActivationMessage = { severity, text: shortText };
     if (rawUri) detail.uri = String(rawUri);
-    if (rawLine != null) {
-      const parsed = Number.parseInt(String(rawLine), 10);
-      if (!Number.isNaN(parsed) && parsed > 0) detail.line = parsed;
+    // Prefer #start=LINE,COL from the URI — @_line is often an ordinal message index, not source line.
+    let line = 0;
+    const uriStr = rawUri ? String(rawUri) : '';
+    const startMatch = uriStr.match(/#start=(\d+),(\d+)/);
+    if (startMatch) {
+      line = Number.parseInt(startMatch[1], 10);
     }
+    if (!line && rawLine != null) {
+      line = Number.parseInt(String(rawLine), 10);
+    }
+    if (Number.isFinite(line) && line > 0) detail.line = line;
     details.push(detail);
   }
 
@@ -708,9 +715,10 @@ function parseSyntaxCheckResult(xml: string): SyntaxCheckResult {
     }
     return {
       severity: type === 'E' ? 'error' : type === 'W' ? 'warning' : 'info',
-      text: String(m['@_shortText'] ?? ''),
+      text: decodeXmlEntities(String(m['@_shortText'] ?? '')),
       line: Number.isFinite(line) ? line : 0,
       column: Number.isFinite(column) ? column : 0,
+      ...(uri ? { uri } : {}),
     };
   });
 

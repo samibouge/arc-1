@@ -106,6 +106,20 @@ describe('E2E SAPActivate failure path (PR #179 regression)', () => {
       //   - The object name (so the LLM knows what failed)
       expect(errorText).toMatch(/Activation failed|still inactive/i);
       expect(errorText.toUpperCase()).toContain(progName);
+      // The broken reference is on line 10 of the fixture source.
+      expect(errorText).toMatch(/\[line 10\]/);
+
+      // 4. Batch activate the same broken object — must also surface the failure.
+      const batchResult = await callTool(client, 'SAPActivate', {
+        action: 'activate',
+        objects: [{ type: 'PROG', name: progName }],
+      });
+
+      const batchErrorText = expectToolError(batchResult);
+      expect(batchErrorText).toMatch(/Batch activation failed/i);
+      expect(batchErrorText.toUpperCase()).toContain(progName);
+      // Per-object status must attribute the error to the specific object with the correct line.
+      expect(batchErrorText).toMatch(new RegExp(`${progName}.*\\(PROG\\).*\\[line 10\\]`, 'i'));
     } finally {
       if (created) {
         try {
